@@ -4,6 +4,7 @@ import com.project.chat.domain.chat.dto.response.ChatMessageResponse;
 import com.project.chat.domain.chat.entity.ChatMessage;
 import com.project.chat.domain.chat.enums.ChatGameType;
 import com.project.chat.domain.chat.enums.ChatScope;
+import com.project.chat.domain.chat.support.ChatMessageTime;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.extern.jackson.Jacksonized;
@@ -43,7 +44,8 @@ public class ChatBroadcastEvent {
                 .nickname(message.getAuthorNickname())
                 .avatarId(message.getAuthorAvatarId())
                 .content(message.getContent())
-                .createdAt(message.getCreatedAt())
+                // DB 재조회로 밀리초가 절삭돼도 최초 방송과 재전파의 표시 시각을 같게 유지한다.
+                .createdAt(ChatMessageTime.fromAcceptedAtMicros(message.getAcceptedAtMicros(), message.getCreatedAt()))
                 .acceptedAtMicros(message.getAcceptedAtMicros())
                 .build();
     }
@@ -60,7 +62,8 @@ public class ChatBroadcastEvent {
                 .nickname(nickname)
                 .avatarId(avatarId)
                 .content(content)
-                .createdAt(createdAt)
+                // 이미 Kafka에 대기 중인 구버전 이벤트도 최초 접수 시각으로 정규화한다.
+                .createdAt(ChatMessageTime.fromAcceptedAtMicros(acceptedAtMicros, createdAt))
                 .ownMessage(own)
                 .build();
     }

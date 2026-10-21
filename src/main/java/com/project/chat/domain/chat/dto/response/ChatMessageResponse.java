@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.project.chat.domain.chat.entity.ChatMessage;
 import com.project.chat.domain.chat.enums.ChatGameType;
 import com.project.chat.domain.chat.enums.ChatScope;
+import com.project.chat.domain.chat.support.ChatMessageTime;
 import lombok.Builder;
 import lombok.Getter;
 
@@ -39,8 +40,7 @@ public class ChatMessageResponse {
                 .avatarId(message.getAuthorAvatarId())
                 .content(message.getContent())
                 // MongoDB Date의 밀리초 절삭과 무관하게 방송·이력·상태 응답의 최초 접수 시각을 일치시킨다.
-                .createdAt(Instant.ofEpochSecond(message.getAcceptedAtMicros() / 1_000_000,
-                        message.getAcceptedAtMicros() % 1_000_000 * 1000))
+                .createdAt(ChatMessageTime.fromAcceptedAtMicros(message.getAcceptedAtMicros(), message.getCreatedAt()))
                 .ownMessage(own)
                 .build();
     }

@@ -8,6 +8,7 @@ import com.project.chat.domain.chat.dto.response.ChatMessageResponse;
 import com.project.chat.domain.chat.entity.ChatMessage;
 import com.project.chat.domain.chat.repository.ChatMessageHistoryRepository;
 import com.project.chat.domain.chat.repository.ChatMessageRepository;
+import com.project.chat.domain.chat.support.ChatMessageTime;
 import com.project.chat.global.exception.BusinessException;
 import com.project.chat.global.exception.ErrorCode;
 import com.project.chat.global.security.ChatPrincipal;
@@ -118,7 +119,7 @@ public class ChatMessageService {
                 .content(content)
                 // 화면 시각과 공개 범위 모두 최초 접수를 기준으로 하며 재처리 시 최초 문서를 유지한다.
                 .createdAt(acceptedAtMicros == 0 ? Instant.now()
-                        : Instant.ofEpochSecond(acceptedAtMicros / 1_000_000, acceptedAtMicros % 1_000_000 * 1000))
+                        : ChatMessageTime.fromAcceptedAtMicros(acceptedAtMicros))
                 .acceptedAtMicros(acceptedAtMicros)
                 .build();
         return repository.save(message)

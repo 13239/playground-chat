@@ -118,6 +118,8 @@ back의 Redis 기동 검증 방식을 reactive 연결에 맞춰 확장했다. �
 
 MongoDB `chat_messages` 컬렉션에 인증된 사용자 ID, 닉네임·아바타 스냅샷, 본문, 요청 UUID, Redis 접수 시각 `acceptedAtMicros`와 UTC 표시 시각을 저장한다. `GLOBAL`은 `global` 단일 채널이고, 게임 방은 추후 `game:gomoku:room:{roomId}` 형식을 사용한다. 클라이언트가 전송한 사용자·대화 키·작성 시각은 신뢰하지 않는다.
 
+저장·최초 방송·재전파·이력·전송 상태 응답의 표시 시각은 모두 `acceptedAtMicros`에서 공통으로 복원한다. MongoDB Date의 밀리초 절삭이나 Kafka에 이미 대기 중인 이벤트의 이전 `createdAt` 값은 공개 응답의 기준으로 사용하지 않는다. 접수 시각이 없거나 유효하지 않은 구버전 데이터는 기존 정책대로 공개·방송 대상에서 제외한다.
+
 - `ChatMessageService.save(principal, destination, clientMessageId, content)`: 로그인 세션을 재검증하고 권한 확인 후 저장한다. 본문은 양끝 공백 제거 후 1~1000 유니코드 코드 포인트, UTF-8 3500바이트 이하이며 제어 문자와 잘못된 서로게이트를 거부한다. 같은 발신자가 같은 대화에 같은 UUID와 동일 본문으로 재시도하면 첫 저장 결과를 반환한다. 동일 UUID를 다른 본문으로 재사용하면 `CHAT_MESSAGE_CONFLICT`다.
 - `ChatMessageService.history(principal, destination, before, requestedSize)`: 기본 30개, 최대 50개. 서버 로그인 경계보다 나중에 접수한 메시지만 조회한다. 응답 `messages`는 과거 → 최신순이며, 이전 페이지가 있으면 `nextCursor`를 사용한다. 잘못된 커서·크기는 명시적으로 거부한다.
 - 기동 시 `chat_history_v2 (conversationKey, acceptedAtMicros DESC, _id DESC)`와 `chat_idempotency_v1 UNIQUE (conversationKey, authorId, clientMessageId)` 인덱스를 준비한다. 기존 v1 인덱스·컬렉션·문서는 삭제하지 않으며 인덱스 충돌은 조용히 무시하지 않는다.
