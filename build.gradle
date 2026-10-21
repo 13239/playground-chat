@@ -6,7 +6,8 @@ plugins {
 
 group = 'com.project'
 version = '0.0.1-SNAPSHOT'
-description = 'chat'
+// back과 독립적으로 실행하는 WebFlux 채팅 서비스다.
+description = 'playground-chat'
 
 java {
     toolchain {
@@ -44,4 +45,10 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+}
+
+// IDE와 bootRun은 로컬 설정을 읽되 배포 JAR에는 실제 자격 증명과 견본을 넣지 않는다.
+tasks.withType(Jar).configureEach {
+    exclude '**/application-local.properties'
+    exclude '**/*.properties.example'
 }

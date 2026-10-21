@@ -36,3 +36,9 @@ out/
 ### VS Code ###
 .vscode/
 /src/main/resources/application.properties
+
+# 로컬 접속 정보와 환경 파일은 공유하지 않고 공개 견본만 유지한다.
+/src/main/resources/application-local.properties
+/.env
+/.env.*
+!/.env.example

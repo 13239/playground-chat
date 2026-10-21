@@ -1,0 +1,78 @@
+# application-local.properties로 복사하고 CHAT_MONGODB_URI에 실제 접속 URI를 공급한다.
+server.port=${CHAT_PORT:9082}
+server.address=127.0.0.1
+server.ssl.enabled=false
+
+# WebFlux만 사용하며 HTTP 본문 버퍼와 종료 대기 시간을 제한한다.
+spring.application.name=playground-chat
+spring.main.web-application-type=reactive
+spring.main.banner-mode=off
+server.shutdown=graceful
+spring.lifecycle.timeout-per-shutdown-phase=20s
+server.forward-headers-strategy=none
+spring.http.codecs.max-in-memory-size=16KB
+spring.webflux.problemdetails.enabled=true
+spring.jackson.deserialization.fail-on-unknown-properties=true
+
+# MongoDB URI는 Boot 4의 spring.mongodb 네임스페이스를 사용한다.
+# 기존 chat_messages는 유지하며 인덱스 설계·생성은 메시지 저장 단계에서 추가한다.
+spring.data.mongodb.auto-index-creation=false
+
+# Redis는 기존 back의 세션과 같은 서버·논리 DB에 연결하고 채팅 키는 chat: 접두사를 사용한다.
+spring.data.redis.repositories.enabled=false
+spring.data.redis.connect-timeout=3s
+spring.data.redis.timeout=3s
+
+# Kafka는 암묵적인 토픽 생성을 사용하지 않고 아래 토폴로지만 초기화한다.
+spring.kafka.admin.auto-create=true
+spring.kafka.admin.fail-fast=true
+spring.kafka.admin.operation-timeout=5s
+spring.kafka.admin.close-timeout=3s
+spring.kafka.admin.modify-topic-configs=false
+spring.kafka.admin.properties[request.timeout.ms]=3000
+spring.kafka.admin.properties[default.api.timeout.ms]=5000
+spring.kafka.producer.acks=all
+spring.kafka.producer.key-serializer=org.apache.kafka.common.serialization.StringSerializer
+spring.kafka.producer.value-serializer=org.apache.kafka.common.serialization.StringSerializer
+spring.kafka.producer.properties[enable.idempotence]=true
+spring.kafka.producer.properties[max.in.flight.requests.per.connection]=5
+spring.kafka.producer.properties[max.block.ms]=5000
+spring.kafka.consumer.enable-auto-commit=false
+spring.kafka.consumer.auto-offset-reset=earliest
+spring.kafka.consumer.max-poll-records=50
+spring.kafka.consumer.key-deserializer=org.apache.kafka.common.serialization.StringDeserializer
+spring.kafka.consumer.value-deserializer=org.apache.kafka.common.serialization.StringDeserializer
+spring.kafka.consumer.properties[allow.auto.create.topics]=false
+chat.kafka.messages-topic=playground.chat.messages.v1
+chat.kafka.broadcasts-topic=playground.chat.broadcasts.v1
+chat.kafka.partitions=3
+
+# 외부에는 상태만 공개하고 상세 연결 정보·설정·환경 변수는 노출하지 않는다.
+management.endpoints.web.exposure.include=health
+management.endpoint.health.show-details=never
+management.endpoint.health.show-components=never
+management.endpoint.health.probes.enabled=true
+management.endpoint.health.group.readiness.include=readinessState,mongo,redis,kafka
+
+# 드라이버 설정 전체를 정보 로그로 반복 출력하지 않는다.
+logging.level.org.apache.kafka.common.config.AbstractConfig=WARN
+logging.level.org.apache.kafka.common.utils.AppInfoParser=WARN
+
+# Docker Desktop에 준비한 로컬 DB이며 환경 변수로 개별 설정을 덮어쓸 수 있다.
+spring.mongodb.uri=${CHAT_MONGODB_URI}
+spring.data.redis.host=${CHAT_REDIS_HOST:127.0.0.1}
+spring.data.redis.port=${CHAT_REDIS_PORT:6379}
+spring.data.redis.database=${CHAT_REDIS_DATABASE:0}
+spring.data.redis.username=${CHAT_REDIS_USERNAME:}
+spring.data.redis.password=${CHAT_REDIS_PASSWORD:}
+spring.kafka.bootstrap-servers=${CHAT_KAFKA_BOOTSTRAP_SERVERS:127.0.0.1:9092}
+spring.kafka.security.protocol=PLAINTEXT
+
+# 로컬 Kafka는 broker 1개이므로 복제 수도 1로 지정한다.
+chat.kafka.replication-factor=1
+chat.kafka.min-in-sync-replicas=1
+
+# back에서 발급한 채팅 증명과 Origin·WebSocket 대상·브라우저 키 검증 정책을 일치시킨다.
+chat.auth.origin=${APP_ORIGIN:http://localhost:3000}
+chat.auth.websocket-url=${CHAT_WEBSOCKET_URL:ws://localhost:9082/ws/chat}
+chat.auth.proof-required=true
