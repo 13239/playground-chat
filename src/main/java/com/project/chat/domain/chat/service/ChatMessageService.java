@@ -45,7 +45,7 @@ public class ChatMessageService {
                 .flatMap(this::saveAccepted)
                 // 이전 로그인/구버전 문서와 UUID가 같아도 과거 본문을 동기 응답으로 공개하지 않는다.
                 .filter(saved -> saved.getAcceptedAtMicros() != null
-                        && saved.getAcceptedAtMicros() > principal.getChatStartedAtMicros())
+                        && saved.getAcceptedAtMicros() > principal.getMessageBoundaryMicros())
                 .switchIfEmpty(Mono.error(new BusinessException(ErrorCode.CHAT_MESSAGE_CONFLICT)))
                 .map(saved -> ChatMessageResponse.from(saved, principal.getUserId()));
     }
@@ -97,9 +97,9 @@ public class ChatMessageService {
             ChatPrincipal sender = ChatPrincipal.builder()
                     .userId(command.getAuthorId()).nickname(command.getAuthorNickname())
                     .avatarId(command.getAuthorAvatarId()).build();
-            return accessPolicy.authorize(sender, destination)
-                    .then(Mono.defer(() -> persist(destination, command.getClientMessageId(), validated, sender,
-                            acceptedAtMicros)));
+            // 접수할 때 방 참가 권한을 검증했다. Kafka 처리 전에 퇴장해도 이미 접수한 메시지는 보존한다.
+            // 수신·이력 공개는 현재 참가자와 입장 경계를 별도로 재검증한다.
+            return persist(destination, command.getClientMessageId(), validated, sender, acceptedAtMicros);
         });
     }
 
@@ -145,7 +145,7 @@ public class ChatMessageService {
                     .then(rateLimiter.read(principal.getUserId()))
                     // limit+1만 조회해 이전 페이지가 있는지 판단하며 요청마다 전체 개수를 세지 않는다.
                     .then(historyRepository.findRecent(destination.getConversationKey(),
-                                    principal.getChatStartedAtMicros(),
+                                    principal.getMessageBoundaryMicros(),
                                     cursor == null ? null : cursor.getAcceptedAtMicros(),
                                     cursor == null ? null : cursor.getId(), size + 1)
                             .collectList())
@@ -161,7 +161,7 @@ public class ChatMessageService {
                 .then(repository.findByConversationKeyAndAuthorIdAndClientMessageId(
                         destination.getConversationKey(), principal.getUserId(), clientMessageId.toString()))
                 .filter(message -> message.getAcceptedAtMicros() != null
-                        && message.getAcceptedAtMicros() > principal.getChatStartedAtMicros())
+                        && message.getAcceptedAtMicros() > principal.getMessageBoundaryMicros())
                 .map(message -> ChatMessageResponse.from(message, principal.getUserId()));
     }
 

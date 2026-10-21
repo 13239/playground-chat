@@ -2,7 +2,7 @@
 
 Spring Boot 4.1.1·Java 25·WebFlux 기반의 독립 채팅 서비스다. MongoDB에는 대화 이력을 저장하고 Kafka로 메시지를 처리·전파하며 Redis는 접속 상태와 기존 로그인 세션 연동에 사용한다.
 
-홈 단일 채널의 WebSocket·Kafka 메시지 처리, Redis 접속자 수·목록, Next.js 화면 연동을 구현했다. 홈 이력은 **현재 로그인 이후 접수한 대화만** 제공하며 게임 방은 참가 권한 검증이 연결될 때까지 저장·조회·전송을 차단한다.
+홈 단일 채널의 WebSocket·Kafka 메시지 처리, Redis 접속자 수·목록, Next.js 화면 연동을 구현했다. 홈 이력은 **현재 로그인 이후 접수한 대화만** 제공하며 오목 방은 back에서 확인한 현재 참가자만 저장·조회·수신할 수 있다.
 
 ## 프로젝트 구조
 
@@ -61,7 +61,9 @@ $env:CHAT_MONGODB_URI='mongodb://사용자:URL인코딩한비밀번호@127.0.0.1
 .\gradlew.bat bootRun --args='--spring.profiles.active=local'
 ```
 
-필요하면 CHAT_PORT, CHAT_REDIS_HOST, CHAT_REDIS_PORT, CHAT_REDIS_DATABASE, CHAT_REDIS_USERNAME, CHAT_REDIS_PASSWORD, CHAT_KAFKA_BOOTSTRAP_SERVERS를 덮어쓴다. 로컬 기본 HTTP 주소는 http://127.0.0.1:9082다.
+필요하면 CHAT_PORT, CHAT_REDIS_HOST, CHAT_REDIS_PORT, CHAT_REDIS_DATABASE, CHAT_REDIS_USERNAME, CHAT_REDIS_PASSWORD, CHAT_KAFKA_BOOTSTRAP_SERVERS를 덮어쓴다. 로컬 기본 HTTP 주소는 http://127.0.0.1:8081이며, front는 http://localhost:3000, back은 http://localhost:8080을 사용한다.
+
+로컬 WebSocket 주소는 ws://localhost:8081/ws/chat이다. back의 application-local.properties에도 `chat.auth.websocket-url=${CHAT_WEBSOCKET_URL:ws://localhost:${CHAT_PORT:8081}/ws/chat}`을 지정해 발급한 접속 증명과 실제 chat 접속 주소를 일치시킨다. CHAT_PORT 또는 CHAT_WEBSOCKET_URL을 변경하면 back과 chat에 같은 값을 공급하고 두 서버를 재시작한다.
 
 MongoDB 설정은 Boot 4의 **spring.mongodb.uri**를 사용한다. URI의 비밀번호 예약 문자는 URL 인코딩한다. Redis DB 번호는 back과 동일하게 맞추고 향후 채팅 키에는 chat: 접두사를 사용한다.
 
@@ -125,7 +127,7 @@ MongoDB `chat_messages` 컬렉션에 인증된 사용자 ID, 닉네임·아바�
 - `ChatMessageService.save(principal, destination, clientMessageId, content)`: 로그인 세션을 재검증하고 권한 확인 후 저장한다. 본문은 양끝 공백 제거 후 1~1000 유니코드 코드 포인트, UTF-8 3500바이트 이하이며 제어 문자와 잘못된 서로게이트를 거부한다. 같은 발신자가 같은 대화에 같은 UUID와 동일 본문으로 재시도하면 첫 저장 결과를 반환한다. 동일 UUID를 다른 본문으로 재사용하면 `CHAT_MESSAGE_CONFLICT`다.
 - `ChatMessageService.history(principal, destination, before, requestedSize)`: 기본 30개, 최대 50개. 서버 로그인 경계보다 나중에 접수한 메시지만 조회한다. 응답 `messages`는 과거 → 최신순이며, 이전 페이지가 있으면 `nextCursor`를 사용한다. 잘못된 커서·크기는 명시적으로 거부한다.
 - 기동 시 `chat_history_v2 (conversationKey, acceptedAtMicros DESC, _id DESC)`와 `chat_idempotency_v1 UNIQUE (conversationKey, authorId, clientMessageId)` 인덱스를 준비한다. 기존 v1 인덱스·컬렉션·문서는 삭제하지 않으며 인덱스 충돌은 조용히 무시하지 않는다.
-- WebSocket 인증 완료 이후에만 이력을 조회할 수 있다. 일반 HTTP 채팅 API는 보안 설정상 여전히 열려 있지 않다. 게임 방 메시지는 **8단계 참가 권한 확인 전까지** `CHAT_ROOM_ACCESS_DENIED`로 차단한다.
+- WebSocket 인증 완료 이후에만 이력을 조회할 수 있다. 일반 HTTP 채팅 API는 보안 설정상 여전히 열려 있지 않다. 게임 방은 현재 참가 리스와 해당 연결의 참가 식별자가 일치하지 않으면 `CHAT_ROOM_ACCESS_DENIED`로 차단한다.
 
 자세한 데이터 계약과 경계 조건은 [stage-3-message-storage.md](docs/stage-3-message-storage.md)를 참고한다.
 
@@ -152,7 +154,7 @@ Java 25 컴파일, 별도 임시 Redis·MongoDB와 실제 WebSocket을 사용하
 
 방송 수신 준비 개선은 격리된 임시 KRaft broker를 사용하는 검증 2개와 기동 차단·구독 공백·보안 경계·버퍼 포화·자원 정리 검증 24개를 통과했다. 실제 토픽 할당, 과거 방송 제외, 대기 방송 수신, 소비자 재시작과 첫 위치 조회 실패 후 재할당 복구를 확인했다. 이 검증의 테스트 소스도 실행 후 삭제하며 기존 사용자 Kafka·MongoDB·Redis에는 접근하지 않는다.
 
-접속자 관리·화면 연동을 사용하며 게임 방 참가 권한과 chat 배포 연결은 후속 작업이다. 홈의 기존 채널 선택 UI는 제거했다.
+접속자 관리·화면 연동과 오목 대기실의 방 참가 권한을 연결했다. chat 배포 연결은 후속 작업이다. 홈의 기존 채널 선택 UI는 제거했다.
 
 ## 접속 제한·로그인 경계·복구 계약
 
@@ -168,3 +170,11 @@ Java 25 컴파일, 별도 임시 Redis·MongoDB와 실제 WebSocket을 사용하
 back·chat·front를 함께 재시작해 새 티켓·방송·접속자 커서 계약을 적용한다. local·dev의 HTTP 예외와 prod의 HTTPS·WSS 정책은 유지한다.
 
 참고: [WebFlux WebSocket](https://docs.spring.io/spring-framework/reference/web/webflux-websocket.html), [Spring Kafka](https://docs.spring.io/spring-kafka/reference/).
+
+## 오목 대기실의 방 채팅
+
+첫 AUTH에 `scope=GAME_ROOM`, `gameType=GOMOKU`, `roomId`를 지정한다. URL·로그인 토큰·티켓 계약은 유지한다. back이 MySQL 커밋 후 공급한 `gomoku:room:access:{roomId}`의 25초 참가 리스를 검증하고 연결 대상을 고정한다. 비참가자의 AUTH, 다른 방이나 공용 채팅으로의 대상 변경, 퇴장한 연결, 이전 참가 식별자는 거절한다.
+
+로그인 경계는 세션 검증용 원본으로 보존한다. 메시지에는 로그인과 입장 시각 중 늦은 경계를 적용해 재입장 전 이력·지연 방송도 숨긴다. 전송·조회와 실시간 방송마다 참가 권한을 확인하며 2초 주기로 세션과 참가 리스를 재검증한다. 공용 접속자 목록을 방 연결에서 조회하지 않는다.
+
+Kafka 접수 전 권한 검증을 마친 글은 소비 전에 퇴장해도 저장을 보존하고, 현재 참가자에게만 공개한다. `chat.kafka.store-group-id`로 격리된 실행의 저장 소비 그룹을 지정할 수 있으며 기본 그룹은 기존 값이다. 실제 게임 시작·제비뽑기·착수 처리는 포함하지 않는다.

@@ -12,6 +12,7 @@ import com.project.chat.domain.chat.kafka.ChatKafkaPublisher;
 import com.project.chat.domain.chat.kafka.ChatBroadcastReadiness;
 import com.project.chat.domain.chat.service.ChatMessageService;
 import com.project.chat.domain.chat.service.ChatOutboundHub;
+import com.project.chat.domain.chat.service.ChatDestinationAccessPolicy;
 import com.project.chat.domain.presence.service.ChatPresenceService;
 import com.project.chat.domain.presence.dto.internal.ChatPresenceCursor;
 import com.project.chat.global.exception.BusinessException;
@@ -58,6 +59,7 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
     private final ChatPresenceService presence;
     private final JsonMapper jsonMapper;
     private final ChatBroadcastReadiness broadcastReadiness;
+    private final ChatDestinationAccessPolicy accessPolicy;
 
     @Override
     public Mono<Void> handle(WebSocketSession session) {
@@ -92,10 +94,18 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
             Flux<ChatServerFrame> output = frames.switchOnFirst((first, remaining) -> {
                 if (first.hasError()) return Flux.error(first.getThrowable());
                 if (!first.hasValue()) return Flux.empty();
-                return authentication.authenticate(decode(first.get()))
+                ChatClientFrame auth = decode(first.get());
+                // URL이나 토큰에 방 번호를 붙이지 않고 첫 AUTH에서 한 연결의 채팅 대상을 고정한다.
+                ChatDestination target = ChatDestination.builder().scope(auth.getScope() == null ? ChatScope.GLOBAL : auth.getScope())
+                        .gameType(auth.getGameType()).roomId(auth.getRoomId()).build();
+                if (auth.getClientMessageId() != null || auth.getContent() != null || auth.getBefore() != null || auth.getLimit() != null
+                        || auth.getOnlineCursor() != null || auth.getOnlineLimit() != null
+                        || auth.getRequestId() != null) return Flux.error(new BusinessException(ErrorCode.INVALID_AUTHENTICATION_REQUEST));
+                return authentication.authenticate(auth)
+                        .flatMap(principal -> accessPolicy.bind(principal, target))
                         .doOnNext(principal -> release.run())
                         .delayUntil(principal -> lease == null ? Mono.empty() : lease.release())
-                        .flatMapMany(principal -> responses(principal, remaining.skip(1)));
+                        .flatMapMany(principal -> responses(principal, target, remaining.skip(1)));
             });
             // 오류를 Netty 송신 publisher 밖으로 전파하면 상태 없는 종료가 먼저 나갈 수 있어 종료 프레임을 먼저 보낸다.
             // WebSocket 송신 흐름 하나에서 제어·이력·실시간 이벤트를 직렬화하고 종료 코드를 전달한다.
@@ -112,7 +122,7 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
         })).onErrorResume(exception -> session.close(closeStatus(exception)));
     }
 
-    private Flux<ChatServerFrame> responses(ChatPrincipal principal, Flux<String> remaining) {
+    private Flux<ChatServerFrame> responses(ChatPrincipal principal, ChatDestination target, Flux<String> remaining) {
         UUID connectionId = UUID.randomUUID();
         ChatServerFrame ready = ChatServerFrame.builder().version(1).type("AUTHENTICATED")
                 .connectionId(connectionId).user(ChatUserResponse.from(principal)).build();
@@ -135,6 +145,12 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
                     && (frame.getOnlineCursor() != null || frame.getOnlineLimit() != null)) {
                 return Flux.error(new BusinessException(ErrorCode.INVALID_AUTHENTICATION_REQUEST));
             }
+            // 인증한 방과 다른 대상을 보내거나 방 연결에서 공용 접속자 목록을 요청할 수 없다.
+            if (("CHAT_SEND".equals(frame.getType()) || "CHAT_HISTORY".equals(frame.getType()) || "CHAT_STATUS".equals(frame.getType()))
+                    && !destination(frame).getConversationKey().equals(target.getConversationKey())
+                    || "PRESENCE_GET".equals(frame.getType()) && target.getScope() != ChatScope.GLOBAL) {
+                return Flux.error(new BusinessException(ErrorCode.CHAT_ROOM_ACCESS_DENIED));
+            }
             Flux<ChatServerFrame> response = switch (frame.getType()) {
                 case "PING" -> {
                     if (hasChatFields(frame)) {
@@ -144,6 +160,7 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
                         yield Flux.error(new BusinessException(ErrorCode.CHAT_CONTROL_RATE_LIMIT_EXCEEDED));
                     }
                     yield authentication.validate(principal)
+                            .then(accessPolicy.authorize(principal, target))
                             .thenReturn(ChatServerFrame.builder().version(1).type("PONG").build()).flux();
                 }
                 case "CHAT_SEND" -> {
@@ -217,14 +234,15 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
                             .code(exception.getErrorCode().name()).retryAfterMillis(exception.getRetryAfterMillis()).build()));
         }, 1).doOnComplete(() -> remoteClosed.tryEmitEmpty());
 
-        // GAME_ROOM의 참가 권한은 아직 확인되지 않는다. 8단계 정책 연결 전에는 GLOBAL만 실시간으로 구독한다.
-        ChatDestination home = ChatDestination.builder().scope(ChatScope.GLOBAL).build();
+        // GAME_ROOM도 AUTH에서 검증한 한 방에만 구독한다. 공용 접속자 수와 방 참가자 수는 섞지 않는다.
+        boolean global = target.getScope() == ChatScope.GLOBAL;
 
         // 자동 세션 연장 없이 로그아웃·만료·계정 차단·브라우저 키 변경을 최대 약 5초 주기로 반영한다.
-        Mono<Void> invalidation = Flux.interval(Duration.ofSeconds(5))
-                .concatMap(ignored -> presence.renew(principal, connectionId), 1).then();
+        Mono<Void> invalidation = Flux.interval(Duration.ofSeconds(global ? 5 : 2))
+                .concatMap(ignored -> global ? presence.renew(principal, connectionId)
+                        : authentication.validate(principal).then(accessPolicy.authorize(principal, target)), 1).then();
         // AUTHENTICATED를 반드시 먼저 전송하며 이후 서버 전파와 클라이언트 요청을 병합한다.
-        Flux<ChatServerFrame> presenceUpdates = Flux.concat(
+        Flux<ChatServerFrame> presenceUpdates = !global ? Flux.empty() : Flux.concat(
                 presence.onlineCount().map(this::presenceChanged),
                 // 느린 연결은 오래된 중간 집계치를 건너뛰고 최신 수치만 반영한다.
                 presence.changedCounts().onBackpressureLatest().map(this::presenceChanged));
@@ -232,17 +250,17 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
         // Redis가 이미 끊겨 정리에 실패한 경우에도 연결 리스가 30초 뒤 자연 만료된다.
         // AUTHENTICATED 송신·즉시 도착한 이력 요청보다 실시간 구독을 먼저 설치한다.
         // 이력 조회 중 발생한 방송은 연결 버퍼를 거쳐 전달하고 프론트에서 메시지 ID로 이력과 병합한다.
-        return outboundHub.withSubscription(principal, home, events -> {
+        return outboundHub.withSubscription(principal, target, events -> {
             Flux<ChatServerFrame> live = events.map(event -> ChatServerFrame.builder().version(1).type("CHAT_MESSAGE")
                     .message(event.toViewer(principal.getUserId())).build());
             return Flux.usingWhen(
-                    presence.connect(principal, connectionId).thenReturn(connectionId),
+                    (global ? presence.connect(principal, connectionId) : Mono.<Void>empty()).thenReturn(connectionId),
                     ignored -> Flux.concat(Mono.just(ready), Flux.merge(controls, live, presenceUpdates))
                             // 수신 완료만으로는 live/PubSub이 계속 살아 있으므로 연결 종료를 별도 신호로 전달한다.
                             .takeUntilOther(Mono.firstWithSignal(invalidation, remoteClosed.asMono())),
-                    ignored -> cleanupPresence(principal, connectionId),
-                    (ignored, error) -> cleanupPresence(principal, connectionId),
-                    ignored -> cleanupPresence(principal, connectionId))
+                    ignored -> global ? cleanupPresence(principal, connectionId) : Mono.empty(),
+                    (ignored, error) -> global ? cleanupPresence(principal, connectionId) : Mono.empty(),
+                    ignored -> global ? cleanupPresence(principal, connectionId) : Mono.empty())
                     // 구독 설치 직후부터 방송 재할당·중단을 감시하며 복구 후에는 새 연결의 이력으로 보충한다.
                     .takeUntilOther(broadcastReadiness.unavailableSignal());
         });

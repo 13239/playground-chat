@@ -27,7 +27,8 @@ public class ChatMessageProcessor {
     private final JsonMapper jsonMapper;
 
     @KafkaListener(id = "chat-message-store", topics = "${chat.kafka.messages-topic}",
-            groupId = "playground-chat-store-v1", concurrency = "${chat.kafka.partitions:3}")
+            // 격리 환경은 별도 그룹을 지정할 수 있고 기본 운영 그룹은 그대로 유지한다.
+            groupId = "${chat.kafka.store-group-id:playground-chat-store-v1}", concurrency = "${chat.kafka.partitions:3}")
     public void process(ConsumerRecord<String, String> record) {
         ChatSendCommand command;
         try {

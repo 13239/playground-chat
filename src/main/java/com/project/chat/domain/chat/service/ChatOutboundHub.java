@@ -2,7 +2,6 @@ package com.project.chat.domain.chat.service;
 
 import com.project.chat.domain.chat.dto.internal.ChatBroadcastEvent;
 import com.project.chat.domain.chat.dto.internal.ChatDestination;
-import com.project.chat.domain.chat.enums.ChatScope;
 import com.project.chat.global.security.ChatPrincipal;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -53,9 +52,8 @@ public class ChatOutboundHub {
                             () -> broadcasts.asFlux()
                                     .filter(event -> event.getConversationKey().equals(destination.getConversationKey()))
                                     // 이력뿐 아니라 지연 도착한 실시간 방송에도 현재 로그인 세션의 공개 경계를 적용한다.
-                                    .filter(event -> destination.getScope() != ChatScope.GLOBAL
-                                            || event.getAcceptedAtMicros() != null
-                                            && event.getAcceptedAtMicros() > principal.getChatStartedAtMicros())
+                                    .filter(event -> event.getAcceptedAtMicros() != null
+                                            && event.getAcceptedAtMicros() > principal.getMessageBoundaryMicros())
                                     .subscribe(event -> {
                                         Sinks.EmitResult result = buffer.tryEmitNext(event);
                                         // 소비 구독 전 가득 찬 unicast 버퍼는 ZERO_SUBSCRIBER로 반환되어도 같은 초과 오류다.
@@ -63,7 +61,10 @@ public class ChatOutboundHub {
                                             failed.tryEmitError(Exceptions.failWithOverflow("채팅 연결 버퍼를 초과했습니다."));
                                         }
                                     }, error -> failed.tryEmitError(error), () -> buffer.tryEmitComplete()),
-                            ignored -> output.apply(buffer.asFlux()).takeUntilOther(failed.asMono()), Disposable::dispose);
+                            // 이미 버퍼에 들어온 방 방송도 퇴장·재입장 이후에는 전달하지 않는다.
+                            ignored -> output.apply(buffer.asFlux().concatMap(event ->
+                                    accessPolicy.authorize(principal, destination).thenReturn(event), 1))
+                                    .takeUntilOther(failed.asMono()), Disposable::dispose);
                 }));
     }
 }
