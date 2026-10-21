@@ -1,11 +1,14 @@
 package com.project.chat.global.config;
 
 import com.project.chat.domain.chat.kafka.ChatMessageProcessor;
+import com.project.chat.domain.chat.kafka.ChatBroadcastReadiness;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.boot.kafka.autoconfigure.ConcurrentKafkaListenerContainerFactoryConfigurer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.annotation.EnableKafka;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.util.backoff.FixedBackOff;
@@ -16,6 +19,17 @@ import java.util.UUID;
 @Configuration(proxyBeanMethods = false)
 @EnableKafka
 public class ChatKafkaListenerConfig {
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<Object, Object> chatBroadcastListenerContainerFactory(
+            ConcurrentKafkaListenerContainerFactoryConfigurer configurer,
+            ConsumerFactory<Object, Object> consumerFactory, ChatBroadcastReadiness readiness) {
+        var factory = new ConcurrentKafkaListenerContainerFactory<Object, Object>();
+        // Boot의 인증·타임아웃·오류 처리 설정을 유지하며 방송 리스너에만 준비 상태 확인을 추가한다.
+        configurer.configure(factory, consumerFactory);
+        factory.getContainerProperties().setConsumerRebalanceListener(readiness.rebalanceListener());
+        return factory;
+    }
 
     @Bean
     public SmartInitializingSingleton chatConsumerProcessingBudget(ConsumerFactory<?, ?> consumerFactory) {

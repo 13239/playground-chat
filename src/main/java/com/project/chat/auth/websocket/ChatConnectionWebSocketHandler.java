@@ -9,6 +9,7 @@ import com.project.chat.domain.chat.dto.internal.ChatDestination;
 import com.project.chat.domain.chat.dto.response.ChatHistoryResponse;
 import com.project.chat.domain.chat.enums.ChatScope;
 import com.project.chat.domain.chat.kafka.ChatKafkaPublisher;
+import com.project.chat.domain.chat.kafka.ChatBroadcastReadiness;
 import com.project.chat.domain.chat.service.ChatMessageService;
 import com.project.chat.domain.chat.service.ChatOutboundHub;
 import com.project.chat.domain.presence.service.ChatPresenceService;
@@ -56,6 +57,7 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
     private final ChatOutboundHub outboundHub;
     private final ChatPresenceService presence;
     private final JsonMapper jsonMapper;
+    private final ChatBroadcastReadiness broadcastReadiness;
 
     @Override
     public Mono<Void> handle(WebSocketSession session) {
@@ -64,7 +66,8 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
 
     /** HTTP 업그레이드 전에 확보한 IP 대기 리스를 인증 직후 반환한다. */
     public Mono<Void> handle(WebSocketSession session, ChatConnectionAdmission.Lease lease) {
-        return Mono.defer(() -> {
+        // 업그레이드 검사 이후 방송 준비가 해제된 경우에도 인증·티켓 소비를 시작하지 않는다.
+        return broadcastReadiness.requireReady().then(Mono.defer(() -> {
             if (pendingAuthentications.incrementAndGet() > MAX_PENDING_AUTHENTICATIONS) {
                 pendingAuthentications.decrementAndGet();
                 return session.close(new CloseStatus(1013, "CHAT_SERVICE_UNAVAILABLE"));
@@ -106,7 +109,7 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
                         if (connection != null) connection.dispose();
                         release.run();
                     });
-        });
+        })).onErrorResume(exception -> session.close(closeStatus(exception)));
     }
 
     private Flux<ChatServerFrame> responses(ChatPrincipal principal, Flux<String> remaining) {
@@ -216,9 +219,6 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
 
         // GAME_ROOM의 참가 권한은 아직 확인되지 않는다. 8단계 정책 연결 전에는 GLOBAL만 실시간으로 구독한다.
         ChatDestination home = ChatDestination.builder().scope(ChatScope.GLOBAL).build();
-        Flux<ChatServerFrame> live = outboundHub.subscribe(principal, home)
-                .map(event -> ChatServerFrame.builder().version(1).type("CHAT_MESSAGE")
-                        .message(event.toViewer(principal.getUserId())).build());
 
         // 자동 세션 연장 없이 로그아웃·만료·계정 차단·브라우저 키 변경을 최대 약 5초 주기로 반영한다.
         Mono<Void> invalidation = Flux.interval(Duration.ofSeconds(5))
@@ -230,14 +230,22 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
                 presence.changedCounts().onBackpressureLatest().map(this::presenceChanged));
         // 연결 등록 성공 후에만 AUTHENTICATED를 보낸다. 정상 종료·오류·취소가 모두 Redis 등록 해제로 귀결된다.
         // Redis가 이미 끊겨 정리에 실패한 경우에도 연결 리스가 30초 뒤 자연 만료된다.
-        return Flux.usingWhen(
-                presence.connect(principal, connectionId).thenReturn(connectionId),
-                ignored -> Flux.concat(Mono.just(ready), Flux.merge(controls, live, presenceUpdates))
-                        // 수신 완료만으로는 live/PubSub이 계속 살아 있으므로 연결 종료를 별도 신호로 전달한다.
-                        .takeUntilOther(Mono.firstWithSignal(invalidation, remoteClosed.asMono())),
-                ignored -> cleanupPresence(principal, connectionId),
-                (ignored, error) -> cleanupPresence(principal, connectionId),
-                ignored -> cleanupPresence(principal, connectionId));
+        // AUTHENTICATED 송신·즉시 도착한 이력 요청보다 실시간 구독을 먼저 설치한다.
+        // 이력 조회 중 발생한 방송은 연결 버퍼를 거쳐 전달하고 프론트에서 메시지 ID로 이력과 병합한다.
+        return outboundHub.withSubscription(principal, home, events -> {
+            Flux<ChatServerFrame> live = events.map(event -> ChatServerFrame.builder().version(1).type("CHAT_MESSAGE")
+                    .message(event.toViewer(principal.getUserId())).build());
+            return Flux.usingWhen(
+                    presence.connect(principal, connectionId).thenReturn(connectionId),
+                    ignored -> Flux.concat(Mono.just(ready), Flux.merge(controls, live, presenceUpdates))
+                            // 수신 완료만으로는 live/PubSub이 계속 살아 있으므로 연결 종료를 별도 신호로 전달한다.
+                            .takeUntilOther(Mono.firstWithSignal(invalidation, remoteClosed.asMono())),
+                    ignored -> cleanupPresence(principal, connectionId),
+                    (ignored, error) -> cleanupPresence(principal, connectionId),
+                    ignored -> cleanupPresence(principal, connectionId))
+                    // 구독 설치 직후부터 방송 재할당·중단을 감시하며 복구 후에는 새 연결의 이력으로 보충한다.
+                    .takeUntilOther(broadcastReadiness.unavailableSignal());
+        });
     }
 
     private ChatServerFrame presenceChanged(Long count) {

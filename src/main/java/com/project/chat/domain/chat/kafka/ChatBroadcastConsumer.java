@@ -20,8 +20,10 @@ public class ChatBroadcastConsumer {
     private final ChatOutboundHub hub;
     private final JsonMapper jsonMapper;
 
-    @KafkaListener(id = "chat-local-broadcasts", topics = "${chat.kafka.broadcasts-topic}",
-            groupId = "#{@chatBroadcastGroupId}", properties = "auto.offset.reset=latest")
+    // 한 소비자가 이 인스턴스의 모든 방송 파티션을 맡아 전체 할당과 시작 위치를 확인한다.
+    @KafkaListener(id = ChatBroadcastReadiness.LISTENER_ID, topics = "${chat.kafka.broadcasts-topic}",
+            groupId = "#{@chatBroadcastGroupId}", properties = "auto.offset.reset=latest",
+            containerFactory = "chatBroadcastListenerContainerFactory", concurrency = "1")
     public void forward(ConsumerRecord<String, String> record) {
         try {
             ChatBroadcastEvent event = jsonMapper.readValue(record.value(), ChatBroadcastEvent.class);
