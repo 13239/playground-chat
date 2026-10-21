@@ -22,4 +22,6 @@ public class ChatSendCommand {
     private final String authorNickname;
     private final String authorAvatarId;
     private final String content;
+    // Kafka 지연·재처리와 무관한 Redis 최초 접수 시각이다. 클라이언트 입력으로 받지 않는다.
+    private final Long acceptedAtMicros;
 }

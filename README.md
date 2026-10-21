@@ -2,7 +2,7 @@
 
 Spring Boot 4.1.1·Java 25·WebFlux 기반의 독립 채팅 서비스다. MongoDB에는 대화 이력을 저장하고 Kafka로 메시지를 처리·전파하며 Redis는 접속 상태와 기존 로그인 세션 연동에 사용한다.
 
-현재는 **4단계: WebSocket·Kafka 메시지 수신·저장 후 실시간 전파**까지 코드가 작성되어 있다. WebSocket 인증 후 홈 단일 채널에 메시지를 발행하고 과거 이력을 조회할 수 있다. 화면 실연동과 Redis 접속자 수·목록은 5~6단계에서 구현한다. 게임 방은 참가 권한 검증이 연결될 때까지 저장·조회·전송을 차단한다.
+홈 단일 채널의 WebSocket·Kafka 메시지 처리, Redis 접속자 수·목록, Next.js 화면 연동을 구현했다. 홈 이력은 **현재 로그인 이후 접수한 대화만** 제공하며 게임 방은 참가 권한 검증이 연결될 때까지 저장·조회·전송을 차단한다.
 
 ## 프로젝트 구조
 
@@ -46,7 +46,7 @@ Docker Desktop에서 다음 서비스가 실행 중이어야 한다.
 | local-redis | 127.0.0.1:6379 | back과 공유할 세션, 향후 chat: 접속 상태 |
 | kafka | 127.0.0.1:9092 | 채팅 처리·전파 |
 
-기존 MongoDB·Redis 데이터는 삭제하거나 초기화하지 않는다. 기동 시 Redis에는 PING만 보내고, 실제 인증 요청에서만 TTL이 있는 chat:auth: 키를 사용한다. 기존 로그인 키는 조회만 한다.
+기존 MongoDB·Redis 데이터는 삭제하거나 초기화하지 않는다. 기동 시 Redis에는 PING만 보내고, 실제 인증 요청에서만 TTL이 있는 chat:auth: 키를 사용한다. 로그인 토큰·TTL은 변경하지 않으며 기존 세션의 최초 새 티켓 발급에서 공개 경계 메타데이터만 추가한다.
 
 현재 PC에는 Git에서 제외한 src/main/resources/application-local.properties를 준비했다. 다음 명령으로 실행한다.
 
@@ -101,7 +101,7 @@ back의 Redis 기동 검증 방식을 reactive 연결에 맞춰 확장했다. �
 
 ## Kafka 토픽
 
-1단계는 토픽만 준비한다. 발행자와 소비자는 아직 만들지 않았다.
+발행자·저장 소비자·인스턴스별 방송 소비자를 사용한다. 전체 채팅의 `global` 키는 같은 파티션을 사용해 처리 순서를 유지한다.
 
 | 토픽 | 용도 |
 | --- | --- |
@@ -116,11 +116,11 @@ back의 Redis 기동 검증 방식을 reactive 연결에 맞춰 확장했다. �
 
 ## 3단계: 메시지 저장과 과거 이력
 
-MongoDB `chat_messages` 컬렉션에 인증된 사용자 ID, 닉네임·아바타 스냅샷, 본문, 요청 UUID, UTC 작성 시각을 저장한다. `GLOBAL`은 `global` 단일 채널이고, 게임 방은 추후 `game:gomoku:room:{roomId}` 형식을 사용한다. 클라이언트가 전송한 사용자·대화 키·작성 시각은 신뢰하지 않는다.
+MongoDB `chat_messages` 컬렉션에 인증된 사용자 ID, 닉네임·아바타 스냅샷, 본문, 요청 UUID, Redis 접수 시각 `acceptedAtMicros`와 UTC 표시 시각을 저장한다. `GLOBAL`은 `global` 단일 채널이고, 게임 방은 추후 `game:gomoku:room:{roomId}` 형식을 사용한다. 클라이언트가 전송한 사용자·대화 키·작성 시각은 신뢰하지 않는다.
 
 - `ChatMessageService.save(principal, destination, clientMessageId, content)`: 로그인 세션을 재검증하고 권한 확인 후 저장한다. 본문은 양끝 공백 제거 후 1~1000 유니코드 코드 포인트, UTF-8 3500바이트 이하이며 제어 문자와 잘못된 서로게이트를 거부한다. 같은 발신자가 같은 대화에 같은 UUID와 동일 본문으로 재시도하면 첫 저장 결과를 반환한다. 동일 UUID를 다른 본문으로 재사용하면 `CHAT_MESSAGE_CONFLICT`다.
-- `ChatMessageService.history(principal, destination, before, requestedSize)`: 기본 30개, 최대 50개. 최신 페이지를 가져오되 응답 `messages`는 과거 → 최신순이며, 이전 페이지가 있으면 `nextCursor`를 사용한다. 잘못된 커서·크기는 명시적으로 거부한다.
-- 기동 시 `chat_history_v1 (conversationKey, createdAt DESC, _id DESC)`와 `chat_idempotency_v1 UNIQUE (conversationKey, authorId, clientMessageId)` 인덱스를 준비한다. 기존 컬렉션과 문서는 삭제하지 않으며 인덱스 충돌은 조용히 무시하지 않는다.
+- `ChatMessageService.history(principal, destination, before, requestedSize)`: 기본 30개, 최대 50개. 서버 로그인 경계보다 나중에 접수한 메시지만 조회한다. 응답 `messages`는 과거 → 최신순이며, 이전 페이지가 있으면 `nextCursor`를 사용한다. 잘못된 커서·크기는 명시적으로 거부한다.
+- 기동 시 `chat_history_v2 (conversationKey, acceptedAtMicros DESC, _id DESC)`와 `chat_idempotency_v1 UNIQUE (conversationKey, authorId, clientMessageId)` 인덱스를 준비한다. 기존 v1 인덱스·컬렉션·문서는 삭제하지 않으며 인덱스 충돌은 조용히 무시하지 않는다.
 - WebSocket 인증 완료 이후에만 이력을 조회할 수 있다. 일반 HTTP 채팅 API는 보안 설정상 여전히 열려 있지 않다. 게임 방 메시지는 **8단계 참가 권한 확인 전까지** `CHAT_ROOM_ACCESS_DENIED`로 차단한다.
 
 자세한 데이터 계약과 경계 조건은 [stage-3-message-storage.md](docs/stage-3-message-storage.md)를 참고한다.
@@ -140,8 +140,21 @@ MongoDB `chat_messages` 컬렉션에 인증된 사용자 ID, 닉네임·아바�
 
 ## 검증 및 다음 단계
 
-첨부된 3단계 소스에 저장·이력·권한·인덱스 코드가 들어 있는 것을 정적 검토했다. 실행 환경에 Java 25와 MongoDB·Redis·Kafka 인스턴스가 없어 이번 4단계의 실제 Java 빌드·통합 테스트는 수행하지 않았다. 실행 검증은 개발자 Java 25 환경에서 수행해야 한다. 임시 테스트 코드는 추가하지 않았다.
+Java 25 컴파일, 별도 임시 Redis·MongoDB와 실제 WebSocket을 사용하는 서버 검증 11개, 가상 브라우저의 메시지 보관·복구 검증 9개를 통과했다. 프론트 타입 검사·채팅 관련 정적 검사·최적화 빌드와 Nginx 설정 검사도 통과했다. 검증 전용 소스는 실행 후 삭제하며 기존 애플리케이션 컨텍스트 테스트와 사용자 데이터는 유지한다. Kafka의 실제 처리량과 운영 인프라 설정은 배포 환경에서 확인한다.
 
-다음 5단계는 Redis 연결별 접속자 관리, 여러 탭 사용자 중복 집계 및 비정상 종료 정리다. 6단계에서 Next.js 채팅 UI·접속자 수·목록을 실데이터에 연결한다. 홈의 기존 채널 선택 UI는 이번 수정 파일에서 제거했다.
+접속자 관리·화면 연동을 사용하며 게임 방 참가 권한과 chat 배포 연결은 후속 작업이다. 홈의 기존 채널 선택 UI는 제거했다.
+
+## 접속 제한·로그인 경계·복구 계약
+
+- 업그레이드 전에 IP별 인증 대기 최대 8개, 접속 시도 버스트 20개·초당 1개 보충을 Redis에서 공유한다. 정상 인증 직후 대기 리스를 반환하고 장애·강제 종료 잔여 리스는 12초 뒤 만료된다. `chat.connection.max-pending-per-ip`, `burst`, `attempts-per-second`로 조정한다.
+- 기본 IP는 실제 TCP 상대다. 프록시 배포는 `CHAT_TRUSTED_PROXY_IPS`에 직접 연결하는 프록시의 고정 IP만 등록하고 프록시에서 `X-Real-IP`를 덮어쓴다. 임의 전달 헤더는 신뢰하지 않으며 IPv6 주소 회전은 /64별로 묶는다. Nginx에도 WebSocket 접속 시도·동시 연결 제한을 적용한다. 일반 API·페이지 요청은 해당 예산에 포함하지 않는다.
+- 연결별 제한 외에 한 사용자의 모든 탭·세션·서버에 전송 버스트 5개/초당 5개, 조회 버스트 4개/초당 2개의 공통 예산을 적용한다. 이력·접속자·전송 상태 조회가 조회 예산을 공유한다. 사용자 예산 초과는 `CHAT_ERROR`의 `operation`, `code`, `retryAfterMillis`, 해당 요청 ID로 알리고 연결은 유지한다.
+- 로그인 Lua가 `chatStartedAtMicros`를 Redis 시계로 고정하고 일회용 티켓과 내부 principal에 전달한다. 메시지도 같은 Redis 시계의 최초 접수 시각을 보존한다. 이력·전송 상태·실시간 방송 모두 로그인 경계를 강제하므로 로그인 전 접수한 지연 메시지도 노출되지 않는다. 필드가 없는 기존 메시지는 공개하지 않는다. 배포 전에 Kafka에 접수되어 시각 필드가 없는 요청도 저장은 보존하며 공개·방송 대상에서 제외한다. 배포 전부터 유지된 세션은 첫 새 티켓 발급 때 경계를 고정하며 세션 TTL은 연장하지 않는다.
+- 접속자 요청은 `PRESENCE_GET {requestId, onlineLimit, onlineCursor?}`다. 응답 `PRESENCE_SNAPSHOT`은 같은 `requestId`와 `nextOnlineCursor`를 돌려준다. 고정 사용자 순서를 사용하는 커서는 해당 WebSocket의 마지막 페이지에서만 유효하며 내부 사용자 ID를 노출하지 않는다. 갱신·앞쪽 사용자 퇴장으로 페이지가 밀리지 않고 새 입장·퇴장 상태는 새로고침으로 확인한다.
+- `CHAT_STATUS {scope, clientMessageId}`는 본인의 현재 로그인 범위 안에서만 저장 여부를 조회한다. `CHAT_STATUS_RESULT {clientMessageId, stored, message?}`로 응답한다. 프론트는 미확정 전송을 확인한 뒤 같은 UUID·본문으로만 재전송하며 자동 전송은 총 3회로 제한한다. 이후 사용자가 전송 확인 버튼으로 재시도한다. 원문이나 미확정 전송은 브라우저 영속 저장소에 기록하지 않는다.
+- 화면은 최대 500개 메시지를 보관한다. 과거 탐색 중에는 오래된 쪽을 유지하고 새 방송이 과거 페이지를 밀어내지 않는다. 최신 대화 버튼으로 현재 페이지에 복귀한다. 동일 세션의 연결 복구는 미확정 전송을 유지하고 새 로그인은 이전 상태를 비운다.
+- Kafka는 레코드당 최대 20초·poll당 10개·poll 제한 5분이다. 시작 시 실제 consumer 설정으로 처리 상한과 최소 60초의 여유를 검사해 잘못된 환경 변수 덮어쓰기도 거절한다. 파티션을 늘려 전체 채팅을 임의로 병렬 처리하지 않는다.
+
+back·chat·front를 함께 재시작해 새 티켓·방송·접속자 커서 계약을 적용한다. local·dev의 HTTP 예외와 prod의 HTTPS·WSS 정책은 유지한다.
 
 참고: [WebFlux WebSocket](https://docs.spring.io/spring-framework/reference/web/webflux-websocket.html), [Spring Kafka](https://docs.spring.io/spring-kafka/reference/).

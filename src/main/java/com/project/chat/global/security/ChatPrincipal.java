@@ -16,6 +16,8 @@ public class ChatPrincipal implements Principal {
     private final String keyThumbprint;
     private final String nickname;
     private final String avatarId;
+    // 재연결·토큰 갱신에도 유지하며 클라이언트가 지정한 시각은 사용하지 않는다.
+    private final long chatStartedAtMicros;
 
     @Override
     public String getName() {

@@ -28,7 +28,9 @@ public class ChatBroadcastConsumer {
             if (event == null || event.getVersion() != 1 || event.getId() == null
                     || !ObjectId.isValid(event.getId()) || event.getAuthorId() == null
                     || event.getClientMessageId() == null || event.getCreatedAt() == null
-                    || event.getContent() == null || event.getConversationKey() == null) {
+                    || event.getContent() == null || event.getConversationKey() == null
+                    // 공개 경계를 알 수 없는 이전 버전 방송은 새 로그인에 재노출하지 않는다.
+                    || event.getAcceptedAtMicros() == null || event.getAcceptedAtMicros() <= 0) {
                 throw new IllegalArgumentException("Invalid broadcast event");
             }
             String expectedKey = ChatDestination.builder().scope(event.getScope())

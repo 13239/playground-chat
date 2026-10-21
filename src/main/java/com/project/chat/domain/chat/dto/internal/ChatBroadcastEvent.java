@@ -27,6 +27,8 @@ public class ChatBroadcastEvent {
     private final String avatarId;
     private final String content;
     private final Instant createdAt;
+    // 서버 간 방송도 이 값을 사용해 로그인 전 대화를 걸러낸다.
+    private final Long acceptedAtMicros;
 
     public static ChatBroadcastEvent from(ChatMessage message) {
         return ChatBroadcastEvent.builder()
@@ -42,6 +44,7 @@ public class ChatBroadcastEvent {
                 .avatarId(message.getAuthorAvatarId())
                 .content(message.getContent())
                 .createdAt(message.getCreatedAt())
+                .acceptedAtMicros(message.getAcceptedAtMicros())
                 .build();
     }
 

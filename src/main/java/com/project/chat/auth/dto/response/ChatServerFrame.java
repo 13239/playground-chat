@@ -27,5 +27,10 @@ public class ChatServerFrame {
     // 접속자 정보에는 개인 세션이나 내부 계정 ID를 포함하지 않는다.
     private final Long onlineCount;
     private final List<ChatOnlineUserResponse> onlineUsers;
-    private final Integer nextOnlineOffset;
+    private final UUID nextOnlineCursor;
+    // 미확정 전송은 본인의 UUID로 저장 여부를 확인하며 일시적인 요청 제한은 연결을 종료하지 않는다.
+    private final Boolean stored;
+    private final String operation;
+    private final String code;
+    private final Long retryAfterMillis;
 }

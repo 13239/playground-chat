@@ -4,6 +4,7 @@ import com.project.chat.auth.dto.request.ChatClientFrame;
 import com.project.chat.auth.dto.response.ChatServerFrame;
 import com.project.chat.auth.dto.response.ChatUserResponse;
 import com.project.chat.auth.service.ChatAuthenticationService;
+import com.project.chat.auth.service.ChatConnectionAdmission;
 import com.project.chat.domain.chat.dto.internal.ChatDestination;
 import com.project.chat.domain.chat.dto.response.ChatHistoryResponse;
 import com.project.chat.domain.chat.enums.ChatScope;
@@ -11,9 +12,11 @@ import com.project.chat.domain.chat.kafka.ChatKafkaPublisher;
 import com.project.chat.domain.chat.service.ChatMessageService;
 import com.project.chat.domain.chat.service.ChatOutboundHub;
 import com.project.chat.domain.presence.service.ChatPresenceService;
+import com.project.chat.domain.presence.dto.internal.ChatPresenceCursor;
 import com.project.chat.global.exception.BusinessException;
 import com.project.chat.global.exception.ErrorCode;
 import com.project.chat.global.security.ChatPrincipal;
+import com.project.chat.global.security.ChatRequestLimitException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -56,6 +59,11 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
 
     @Override
     public Mono<Void> handle(WebSocketSession session) {
+        return handle(session, null);
+    }
+
+    /** HTTP 업그레이드 전에 확보한 IP 대기 리스를 인증 직후 반환한다. */
+    public Mono<Void> handle(WebSocketSession session, ChatConnectionAdmission.Lease lease) {
         return Mono.defer(() -> {
             if (pendingAuthentications.incrementAndGet() > MAX_PENDING_AUTHENTICATIONS) {
                 pendingAuthentications.decrementAndGet();
@@ -83,6 +91,7 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
                 if (!first.hasValue()) return Flux.empty();
                 return authentication.authenticate(decode(first.get()))
                         .doOnNext(principal -> release.run())
+                        .delayUntil(principal -> lease == null ? Mono.empty() : lease.release())
                         .flatMapMany(principal -> responses(principal, remaining.skip(1)));
             });
             // 오류를 Netty 송신 publisher 밖으로 전파하면 상태 없는 종료가 먼저 나갈 수 있어 종료 프레임을 먼저 보낸다.
@@ -108,6 +117,8 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
         AtomicLong lastSend = new AtomicLong();
         AtomicLong lastHistory = new AtomicLong();
         AtomicLong lastPresence = new AtomicLong();
+        AtomicLong lastStatus = new AtomicLong();
+        AtomicReference<ChatPresenceCursor> presenceCursor = new AtomicReference<>();
         Sinks.Empty<Void> remoteClosed = Sinks.empty();
 
         Flux<ChatServerFrame> controls = remaining.concatMap(text -> {
@@ -118,10 +129,10 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
             }
             // 접속자 페이지 필드는 PRESENCE_GET에서만 허용한다.
             if (!"PRESENCE_GET".equals(frame.getType())
-                    && (frame.getOnlineOffset() != null || frame.getOnlineLimit() != null)) {
+                    && (frame.getOnlineCursor() != null || frame.getOnlineLimit() != null)) {
                 return Flux.error(new BusinessException(ErrorCode.INVALID_AUTHENTICATION_REQUEST));
             }
-            return switch (frame.getType()) {
+            Flux<ChatServerFrame> response = switch (frame.getType()) {
                 case "PING" -> {
                     if (hasChatFields(frame)) {
                         yield Flux.error(new BusinessException(ErrorCode.INVALID_AUTHENTICATION_REQUEST));
@@ -148,18 +159,30 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
                 }
                 case "PRESENCE_GET" -> {
                     // 목록은 인증된 접속에서만 요청하고 반복 조회 폭주를 제한한다.
-                    if (hasChatFields(frame)) {
+                    if (hasMessageFields(frame) || frame.getRequestId() == null) {
                         yield Flux.error(new BusinessException(ErrorCode.INVALID_AUTHENTICATION_REQUEST));
                     }
                     if (!rateLimit(lastPresence, Duration.ofSeconds(1))) {
                         yield Flux.error(new BusinessException(ErrorCode.CHAT_CONTROL_RATE_LIMIT_EXCEEDED));
                     }
-                    yield presence.snapshot(principal, frame.getOnlineOffset(), frame.getOnlineLimit())
-                            .map(snapshot -> ChatServerFrame.builder()
-                                    .version(1).type("PRESENCE_SNAPSHOT")
+                    // 클라이언트 커서는 이 연결의 마지막 페이지에만 유효하다. 사용자 키를 직접 받지 않는다.
+                    ChatPresenceCursor previous = presenceCursor.get();
+                    if (frame.getOnlineCursor() != null
+                            && (previous == null || !frame.getOnlineCursor().equals(previous.getToken()))) {
+                        yield Flux.error(new BusinessException(ErrorCode.INVALID_PRESENCE_REQUEST));
+                    }
+                    String after = frame.getOnlineCursor() == null ? null : previous.getAfterUserId();
+                    yield presence.snapshot(principal, after, frame.getOnlineLimit())
+                            .map(snapshot -> {
+                                UUID token = snapshot.isHasMore() ? UUID.randomUUID() : null;
+                                presenceCursor.set(token == null ? null : ChatPresenceCursor.builder()
+                                        .token(token).afterUserId(snapshot.getNextUserId()).build());
+                                return ChatServerFrame.builder()
+                                    .version(1).type("PRESENCE_SNAPSHOT").requestId(frame.getRequestId())
                                     .onlineCount(snapshot.getOnlineCount())
                                     .onlineUsers(snapshot.getUsers()).hasMore(snapshot.isHasMore())
-                                    .nextOnlineOffset(snapshot.getNextOnlineOffset()).build()).flux();
+                                    .nextOnlineCursor(token).build();
+                            }).flux();
                 }
                 case "CHAT_HISTORY" -> {
                     if (frame.getRequestId() == null || frame.getClientMessageId() != null
@@ -169,8 +192,26 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
                     yield messages.history(principal, destination(frame), frame.getBefore(), frame.getLimit())
                             .flatMapMany(page -> historyFrames(page, frame.getRequestId()));
                 }
+                case "CHAT_STATUS" -> {
+                    if (frame.getClientMessageId() == null || frame.getContent() != null || frame.getBefore() != null
+                            || frame.getLimit() != null || frame.getRequestId() != null
+                            || !rateLimit(lastStatus, Duration.ofMillis(500))) {
+                        yield Flux.error(new BusinessException(ErrorCode.INVALID_AUTHENTICATION_REQUEST));
+                    }
+                    // 본인의 UUID를 고유 인덱스로 조회하므로 최근 페이지 바깥의 저장 결과도 복구한다.
+                    yield messages.status(principal, destination(frame), frame.getClientMessageId())
+                            .map(message -> ChatServerFrame.builder().version(1).type("CHAT_STATUS_RESULT")
+                                    .clientMessageId(frame.getClientMessageId()).stored(true).message(message).build())
+                            .defaultIfEmpty(ChatServerFrame.builder().version(1).type("CHAT_STATUS_RESULT")
+                                    .clientMessageId(frame.getClientMessageId()).stored(false).build()).flux();
+                }
                 default -> Flux.error(new BusinessException(ErrorCode.INVALID_AUTHENTICATION_REQUEST));
             };
+            // 사용자 전체 예산 초과는 요청만 거절한다. 잘못된 프레임·인증 실패는 기존 종료 정책을 유지한다.
+            return response.onErrorResume(ChatRequestLimitException.class, exception -> Mono.just(
+                    ChatServerFrame.builder().version(1).type("CHAT_ERROR").operation(frame.getType())
+                            .clientMessageId(frame.getClientMessageId()).requestId(frame.getRequestId())
+                            .code(exception.getErrorCode().name()).retryAfterMillis(exception.getRetryAfterMillis()).build()));
         }, 1).doOnComplete(() -> remoteClosed.tryEmitEmpty());
 
         // GAME_ROOM의 참가 권한은 아직 확인되지 않는다. 8단계 정책 연결 전에는 GLOBAL만 실시간으로 구독한다.
@@ -230,9 +271,13 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
     }
 
     private boolean hasChatFields(ChatClientFrame frame) {
+        return hasMessageFields(frame) || frame.getRequestId() != null;
+    }
+
+    private boolean hasMessageFields(ChatClientFrame frame) {
         return frame.getScope() != null || frame.getGameType() != null || frame.getRoomId() != null
                 || frame.getClientMessageId() != null || frame.getContent() != null || frame.getBefore() != null
-                || frame.getLimit() != null || frame.getRequestId() != null;
+                || frame.getLimit() != null;
     }
 
     private boolean rateLimit(AtomicLong last, Duration minInterval) {

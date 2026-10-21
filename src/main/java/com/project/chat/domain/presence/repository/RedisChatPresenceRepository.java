@@ -7,12 +7,11 @@ import com.project.chat.global.exception.ErrorCode;
 import com.project.chat.global.security.ChatPrincipal;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.io.ClassPathResource;
-import org.springframework.data.domain.Range;
-import org.springframework.data.redis.connection.Limit;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Repository;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Flux;
 
 import java.time.Duration;
 import java.util.Comparator;
@@ -27,6 +26,7 @@ public class RedisChatPresenceRepository {
 
     // 모든 관련 키를 같은 Redis Cluster 슬롯에 배치해 원자적 Lua 갱신을 보장한다.
     private static final String USERS = "chat:presence:{online}:users";
+    private static final String ORDERED_USERS = "chat:presence:{online}:ordered";
     public static final String CHANGES_CHANNEL = "chat:presence:{online}:changed";
     private static final String CONNECTIONS_PREFIX = "chat:presence:{online}:connections:";
     private static final String PROFILE_PREFIX = "chat:presence:{online}:profile:";
@@ -35,13 +35,15 @@ public class RedisChatPresenceRepository {
     private static final RedisScript<Long> CONNECT = script("redis/presence/connect.lua");
     private static final RedisScript<Long> RENEW = script("redis/presence/renew.lua");
     private static final RedisScript<Long> DISCONNECT = script("redis/presence/disconnect.lua");
+    private static final RedisScript<Long> COUNT = script("redis/presence/count.lua");
+    private static final RedisScript<List> PAGE = RedisScript.of(new ClassPathResource("redis/presence/page.lua"), List.class);
 
     private final ReactiveStringRedisTemplate redis;
 
     public Mono<Void> connect(ChatPrincipal principal, UUID connectionId) {
         return execute(CONNECT, principal.getUserId(),
                 List.of(principal.getUserId().toString(), connectionId.toString(),
-                        Long.toString(System.currentTimeMillis()), Long.toString(LEASE.toMillis()),
+                        Long.toString(LEASE.toMillis()),
                         principal.getNickname(), principal.getAvatarId(),
                         Integer.toString(MAX_CONNECTIONS_PER_USER)))
                 .flatMap(result -> result == 1L ? Mono.<Void>empty()
@@ -51,40 +53,40 @@ public class RedisChatPresenceRepository {
     public Mono<Void> renew(long userId, UUID connectionId) {
         return execute(RENEW, userId,
                 List.of(Long.toString(userId), connectionId.toString(),
-                        Long.toString(System.currentTimeMillis()), Long.toString(LEASE.toMillis())))
+                        Long.toString(LEASE.toMillis())))
                 // 만료된 연결을 다시 활성화하지 않는다. WebSocket을 종료하고 새 티켓으로 재인증한다.
                 .flatMap(result -> result == 1L ? Mono.<Void>empty() : Mono.error(unavailable()));
     }
 
     public Mono<Void> disconnect(long userId, UUID connectionId) {
         return execute(DISCONNECT, userId,
-                List.of(Long.toString(userId), connectionId.toString(),
-                        Long.toString(System.currentTimeMillis())))
+                List.of(Long.toString(userId), connectionId.toString()))
                 .then();
     }
 
     /** 만료 시각보다 미래인 사용자만 집계한다. stale 항목은 다음 Lua 갱신에서 정리한다. */
     public Mono<Long> onlineCount() {
-        return redis.opsForZSet().count(USERS,
-                Range.open((double) System.currentTimeMillis(), Double.POSITIVE_INFINITY))
+        return redis.execute(COUNT, List.of(USERS)).single()
                 .onErrorMap(exception -> unavailable());
     }
 
     /** 접속자 목록은 요청 시에만 조회하며, 각 사용자에 연결이 여러 개여도 프로필을 한 번만 반환한다. */
-    public Mono<ChatPresenceSnapshot> snapshot(int offset, int size) {
-        long now = System.currentTimeMillis();
-        return redis.opsForZSet().count(USERS, Range.open((double) now, Double.POSITIVE_INFINITY))
-                .flatMap(count -> redis.opsForZSet()
-                        .rangeByScore(USERS, Range.open((double) now, Double.POSITIVE_INFINITY),
-                                Limit.limit().offset(offset).count(size))
+    public Mono<ChatPresenceSnapshot> snapshot(String afterUserId, int size) {
+        // 전체 개수와 페이지 경계를 원자적으로 읽으며 offset 증가에 따른 탐색 비용을 없앤다.
+        return redis.execute(PAGE, List.of(USERS, ORDERED_USERS),
+                        List.of(afterUserId == null ? "" : afterUserId, Integer.toString(size))).single()
+                // Redis의 List.class 반환 경계에서만 와일드카드로 바꾸고 이후에는 raw 타입을 전파하지 않는다.
+                .<List<?>>map(page -> page)
+                .flatMap(page -> Flux.fromIterable(page.subList(2, page.size()))
+                        .map(String::valueOf)
                         .flatMapSequential(this::publicProfile, 16)
                         .collectList()
                         .map(users -> ChatPresenceSnapshot.builder()
-                                .onlineCount(count)
+                                .onlineCount(Long.parseLong(String.valueOf(page.getFirst())))
                                 .users(users.stream().sorted(Comparator.comparing(ChatOnlineUserResponse::getNickname))
                                         .toList())
-                                .hasMore(count > (long) offset + size)
-                                .nextOnlineOffset(count > (long) offset + size ? offset + size : null)
+                                .hasMore(!String.valueOf(page.get(1)).isEmpty())
+                                .nextUserId(String.valueOf(page.get(1)).isEmpty() ? null : String.valueOf(page.get(1)))
                                 .build()))
                 .onErrorMap(exception -> unavailable());
     }
@@ -100,7 +102,7 @@ public class RedisChatPresenceRepository {
 
     private Mono<Long> execute(RedisScript<Long> script, long userId, List<String> args) {
         return redis.execute(script, List.of(USERS, CONNECTIONS_PREFIX + userId,
-                        PROFILE_PREFIX + userId, CHANGES_CHANNEL), args)
+                        PROFILE_PREFIX + userId, CHANGES_CHANNEL, ORDERED_USERS), args)
                 .single()
                 .onErrorMap(exception -> unavailable());
     }

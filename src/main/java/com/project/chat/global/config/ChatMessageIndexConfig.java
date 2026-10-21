@@ -24,17 +24,18 @@ public class ChatMessageIndexConfig {
             var indexes = mongoTemplate.indexOps(ChatMessage.class);
             var history = new Index()
                     .on("conversationKey", Sort.Direction.ASC)
-                    .on("createdAt", Sort.Direction.DESC)
+                    .on("acceptedAtMicros", Sort.Direction.DESC)
                     .on("_id", Sort.Direction.DESC)
-                    .named("chat_history_v1");
+                    .named("chat_history_v2");
             var idempotency = new Index()
                     .on("conversationKey", Sort.Direction.ASC)
                     .on("authorId", Sort.Direction.ASC)
                     .on("clientMessageId", Sort.Direction.ASC)
                     .unique()
                     .named("chat_idempotency_v1");
-            indexes.ensureIndex(history)
-                    .then(indexes.ensureIndex(idempotency))
+            // 삭제 예정 ensureIndex 대신 현재 API를 사용하며 기존 v1 인덱스·문서는 삭제하지 않는다.
+            indexes.createIndex(history)
+                    .then(indexes.createIndex(idempotency))
                     // 시작 시점에만 블로킹하며 WebFlux 요청 처리 스레드에서는 블로킹하지 않는다.
                     .block(Duration.ofSeconds(20));
             log.info("채팅 메시지 조회·멱등성 인덱스 준비 완료");

@@ -4,6 +4,7 @@ import com.project.chat.auth.service.ChatAuthenticationService;
 import com.project.chat.domain.presence.dto.response.ChatPresenceSnapshot;
 import com.project.chat.domain.presence.repository.RedisChatPresenceRepository;
 import com.project.chat.global.security.ChatPrincipal;
+import com.project.chat.global.security.ChatRequestRateLimiter;
 import com.project.chat.global.exception.BusinessException;
 import com.project.chat.global.exception.ErrorCode;
 import org.springframework.data.redis.listener.ChannelTopic;
@@ -24,13 +25,15 @@ public class ChatPresenceService {
     private final ChatAuthenticationService authentication;
     private final ReactiveRedisMessageListenerContainer listener;
     private final Flux<Long> changes;
+    private final ChatRequestRateLimiter rateLimiter;
 
     public ChatPresenceService(RedisChatPresenceRepository repository,
                                ChatAuthenticationService authentication,
-                               ReactiveRedisMessageListenerContainer listener) {
+                               ReactiveRedisMessageListenerContainer listener, ChatRequestRateLimiter rateLimiter) {
         this.repository = repository;
         this.authentication = authentication;
         this.listener = listener;
+        this.rateLimiter = rateLimiter;
         // Redis Pub/Sub은 유실될 수 있으므로 20초 주기 재동기화로 숫자를 보정한다.
         // 공유 구독은 chat 서버마다 하나만 두어 WebSocket 접속 수만큼 Redis 구독이 생성되지 않게 한다.
         this.changes = Flux.merge(
@@ -56,13 +59,13 @@ public class ChatPresenceService {
         return repository.disconnect(principal.getUserId(), connectionId);
     }
 
-    public Mono<ChatPresenceSnapshot> snapshot(ChatPrincipal principal, Integer requestedOffset, Integer requestedSize) {
-        int offset = requestedOffset == null ? 0 : requestedOffset;
+    public Mono<ChatPresenceSnapshot> snapshot(ChatPrincipal principal, String afterUserId, Integer requestedSize) {
         int size = requestedSize == null ? 50 : requestedSize;
-        if (offset < 0 || offset > 100_000 || size < 1 || size > 100 || offset > Integer.MAX_VALUE - size) {
+        if (size < 1 || size > 100) {
             return Mono.error(new BusinessException(ErrorCode.INVALID_PRESENCE_REQUEST));
         }
-        return authentication.validate(principal).then(repository.snapshot(offset, size));
+        return authentication.validate(principal).then(rateLimiter.read(principal.getUserId()))
+                .then(repository.snapshot(afterUserId, size));
     }
 
     public Mono<Long> onlineCount() {

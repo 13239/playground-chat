@@ -11,13 +11,13 @@ import com.project.chat.domain.chat.repository.ChatMessageRepository;
 import com.project.chat.global.exception.BusinessException;
 import com.project.chat.global.exception.ErrorCode;
 import com.project.chat.global.security.ChatPrincipal;
+import com.project.chat.global.security.ChatRequestRateLimiter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -35,12 +35,17 @@ public class ChatMessageService {
     private final ChatDestinationAccessPolicy accessPolicy;
     private final ChatMessageRepository repository;
     private final ChatMessageHistoryRepository historyRepository;
+    private final ChatRequestRateLimiter rateLimiter;
 
     public Mono<ChatMessageResponse> save(ChatPrincipal principal, ChatDestination destination,
                                           UUID clientMessageId, String content) {
         // 기존 3단계 서비스 사용 경로도 유지한다. 저장 전 인증·대상 권한을 재확인한다.
         return prepare(principal, destination, clientMessageId, content)
                 .flatMap(this::saveAccepted)
+                // 이전 로그인/구버전 문서와 UUID가 같아도 과거 본문을 동기 응답으로 공개하지 않는다.
+                .filter(saved -> saved.getAcceptedAtMicros() != null
+                        && saved.getAcceptedAtMicros() > principal.getChatStartedAtMicros())
+                .switchIfEmpty(Mono.error(new BusinessException(ErrorCode.CHAT_MESSAGE_CONFLICT)))
                 .map(saved -> ChatMessageResponse.from(saved, principal.getUserId()));
     }
 
@@ -55,7 +60,8 @@ public class ChatMessageService {
             // 클라이언트의 작성자·시각·대화키는 받지 않는다. 현재 인증 주체로만 확정한다.
             return authentication.validate(principal)
                     .then(accessPolicy.authorize(principal, destination))
-                    .thenReturn(ChatSendCommand.builder()
+                    .then(rateLimiter.send(principal.getUserId()))
+                    .map(acceptedAt -> ChatSendCommand.builder()
                             .version(1)
                             .clientMessageId(clientMessageId)
                             .scope(destination.getScope())
@@ -65,6 +71,7 @@ public class ChatMessageService {
                             .authorNickname(principal.getNickname())
                             .authorAvatarId(principal.getAvatarId())
                             .content(validated)
+                            .acceptedAtMicros(acceptedAt)
                             .build());
         });
     }
@@ -76,10 +83,13 @@ public class ChatMessageService {
                     || command.getAuthorId() == null || command.getAuthorId() <= 0
                     || command.getAuthorNickname() == null || command.getAuthorNickname().isBlank()
                     || command.getAuthorNickname().length() > 150
-                    || command.getAuthorAvatarId() == null || command.getAuthorAvatarId().length() > 100) {
+                    || command.getAuthorAvatarId() == null || command.getAuthorAvatarId().length() > 100
+                    || command.getAcceptedAtMicros() != null && command.getAcceptedAtMicros() <= 0) {
                 return Mono.error(new BusinessException(ErrorCode.INVALID_CHAT_MESSAGE));
             }
             String validated = ChatMessageContentValidator.validate(command.getContent());
+            // 배포 전 Kafka에 접수된 구버전 요청은 유실하지 않고 보존한다. 시각이 없으므로 공개 범위에는 넣지 않는다.
+            long acceptedAtMicros = command.getAcceptedAtMicros() == null ? 0 : command.getAcceptedAtMicros();
             ChatDestination destination = ChatDestination.builder()
                     .scope(command.getScope()).gameType(command.getGameType()).roomId(command.getRoomId()).build();
             // 외부 클라이언트는 이 함수를 호출할 수 없다. Kafka 토픽 쓰기 권한은 chat 서비스로 제한해야 한다.
@@ -87,12 +97,13 @@ public class ChatMessageService {
                     .userId(command.getAuthorId()).nickname(command.getAuthorNickname())
                     .avatarId(command.getAuthorAvatarId()).build();
             return accessPolicy.authorize(sender, destination)
-                    .then(Mono.defer(() -> persist(destination, command.getClientMessageId(), validated, sender)));
+                    .then(Mono.defer(() -> persist(destination, command.getClientMessageId(), validated, sender,
+                            acceptedAtMicros)));
         });
     }
 
     private Mono<ChatMessage> persist(ChatDestination destination, UUID clientMessageId,
-                                      String content, ChatPrincipal principal) {
+                                      String content, ChatPrincipal principal, long acceptedAtMicros) {
         String key = destination.getConversationKey();
         // 재수신 시 동일한 UUID의 원본 문서를 사용한다. 서로 다른 내용은 명시적으로 충돌 처리한다.
         ChatMessage message = ChatMessage.builder()
@@ -105,7 +116,10 @@ public class ChatMessageService {
                 .authorAvatarId(principal.getAvatarId())
                 .clientMessageId(clientMessageId.toString())
                 .content(content)
-                .createdAt(Instant.now().truncatedTo(ChronoUnit.MILLIS))
+                // 화면 시각과 공개 범위 모두 최초 접수를 기준으로 하며 재처리 시 최초 문서를 유지한다.
+                .createdAt(acceptedAtMicros == 0 ? Instant.now()
+                        : Instant.ofEpochSecond(acceptedAtMicros / 1_000_000, acceptedAtMicros % 1_000_000 * 1000))
+                .acceptedAtMicros(acceptedAtMicros)
                 .build();
         return repository.save(message)
                 .onErrorResume(DuplicateKeyException.class, exception ->
@@ -127,13 +141,27 @@ public class ChatMessageService {
             ChatMessageCursor cursor = before == null ? null : ChatMessageCursor.decode(before);
             return authentication.validate(principal)
                     .then(accessPolicy.authorize(principal, destination))
+                    .then(rateLimiter.read(principal.getUserId()))
                     // limit+1만 조회해 이전 페이지가 있는지 판단하며 요청마다 전체 개수를 세지 않는다.
                     .then(historyRepository.findRecent(destination.getConversationKey(),
-                                    cursor == null ? null : cursor.getCreatedAt(),
+                                    principal.getChatStartedAtMicros(),
+                                    cursor == null ? null : cursor.getAcceptedAtMicros(),
                                     cursor == null ? null : cursor.getId(), size + 1)
                             .collectList())
                     .map(results -> toPage(results, size, principal.getUserId()));
         });
+    }
+
+    /** 최근 페이지와 무관하게 본인의 전송 UUID만 확인한다. 다른 사용자나 이전 로그인 내용은 반환하지 않는다. */
+    public Mono<ChatMessageResponse> status(ChatPrincipal principal, ChatDestination destination, UUID clientMessageId) {
+        return authentication.validate(principal)
+                .then(accessPolicy.authorize(principal, destination))
+                .then(rateLimiter.read(principal.getUserId()))
+                .then(repository.findByConversationKeyAndAuthorIdAndClientMessageId(
+                        destination.getConversationKey(), principal.getUserId(), clientMessageId.toString()))
+                .filter(message -> message.getAcceptedAtMicros() != null
+                        && message.getAcceptedAtMicros() > principal.getChatStartedAtMicros())
+                .map(message -> ChatMessageResponse.from(message, principal.getUserId()));
     }
 
     private ChatHistoryResponse toPage(List<ChatMessage> results, int size, Long viewerId) {

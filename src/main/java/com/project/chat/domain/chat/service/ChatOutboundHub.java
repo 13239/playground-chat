@@ -2,6 +2,7 @@ package com.project.chat.domain.chat.service;
 
 import com.project.chat.domain.chat.dto.internal.ChatBroadcastEvent;
 import com.project.chat.domain.chat.dto.internal.ChatDestination;
+import com.project.chat.domain.chat.enums.ChatScope;
 import com.project.chat.global.security.ChatPrincipal;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -33,6 +34,10 @@ public class ChatOutboundHub {
         return accessPolicy.authorize(principal, destination)
                 .thenMany(broadcasts.asFlux()
                         .filter(event -> event.getConversationKey().equals(destination.getConversationKey()))
+                        // 이력뿐 아니라 지연 도착한 실시간 방송에도 현재 로그인 세션의 공개 경계를 적용한다.
+                        .filter(event -> destination.getScope() != ChatScope.GLOBAL
+                                || event.getAcceptedAtMicros() != null
+                                && event.getAcceptedAtMicros() > principal.getChatStartedAtMicros())
                         .onBackpressureBuffer(CONNECTION_BUFFER, dropped -> { }, BufferOverflowStrategy.ERROR));
     }
 }

@@ -38,7 +38,9 @@ public class ChatMessageResponse {
                 .nickname(message.getAuthorNickname())
                 .avatarId(message.getAuthorAvatarId())
                 .content(message.getContent())
-                .createdAt(message.getCreatedAt())
+                // MongoDB Date의 밀리초 절삭과 무관하게 방송·이력·상태 응답의 최초 접수 시각을 일치시킨다.
+                .createdAt(Instant.ofEpochSecond(message.getAcceptedAtMicros() / 1_000_000,
+                        message.getAcceptedAtMicros() % 1_000_000 * 1000))
                 .ownMessage(own)
                 .build();
     }

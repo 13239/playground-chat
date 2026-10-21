@@ -28,6 +28,9 @@ public enum ErrorCode {
     CHAT_PROOF_INVALID(HttpStatus.FORBIDDEN, "브라우저의 채팅 접속 증명을 확인할 수 없습니다."),
     CHAT_ORIGIN_INVALID(HttpStatus.FORBIDDEN, "허용되지 않은 채팅 연결입니다."),
     CHAT_CONTROL_RATE_LIMIT_EXCEEDED(HttpStatus.TOO_MANY_REQUESTS, "연결 확인 요청이 너무 많습니다."),
+    // 인증 전 IP 예산과 인증 후 사용자 예산은 서로 다른 경계에서 적용한다.
+    CHAT_CONNECTION_RATE_LIMIT_EXCEEDED(HttpStatus.TOO_MANY_REQUESTS, "채팅 접속 요청이 너무 많습니다."),
+    CHAT_REQUEST_RATE_LIMIT_EXCEEDED(HttpStatus.TOO_MANY_REQUESTS, "채팅 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요."),
     CHAT_CONNECTION_LIMIT_EXCEEDED(HttpStatus.TOO_MANY_REQUESTS, "동일 계정의 채팅 연결 수가 너무 많습니다."),
     INVALID_SESSION(HttpStatus.UNAUTHORIZED, "유효하지 않거나 만료된 로그인 세션입니다."),
     ACCESS_DENIED(HttpStatus.FORBIDDEN, "접근 권한이 없습니다."),

@@ -19,4 +19,6 @@ public class ChatTicket {
     private final String websocketUrl;
     private final Instant issuedAt;
     private final Instant expiresAt;
+    // 발급 시각이 아니라 최초 로그인에서 고정한 홈 채팅 공개 경계다.
+    private final long chatStartedAtMicros;
 }

@@ -19,6 +19,9 @@ import java.time.Duration;
 @RequiredArgsConstructor
 public class ChatMessageProcessor {
 
+    // 컨테이너의 poll 예산 검증도 같은 상수를 사용해 설정과 처리 상한이 어긋나지 않게 한다.
+    public static final Duration MAX_PROCESSING_TIME = Duration.ofSeconds(20);
+
     private final ChatMessageService messageService;
     private final ChatKafkaPublisher publisher;
     private final JsonMapper jsonMapper;
@@ -38,9 +41,10 @@ public class ChatMessageProcessor {
         try {
             // Kafka 리스너 전용 스레드만 블로킹한다. Netty WebFlux 이벤트 루프에서는 블로킹하지 않는다.
             messageService.saveAccepted(command)
-                    .map(ChatBroadcastEvent::from)
-                    .flatMap(publisher::broadcast)
-                    .block(Duration.ofSeconds(20));
+                    // 구버전 대기 메시지는 저장만 보존하고 로그인 경계를 증명할 수 있는 새 메시지만 방송한다.
+                    .flatMap(saved -> saved.getAcceptedAtMicros() != null && saved.getAcceptedAtMicros() > 0
+                            ? publisher.broadcast(ChatBroadcastEvent.from(saved)) : reactor.core.publisher.Mono.empty())
+                    .block(MAX_PROCESSING_TIME);
         } catch (BusinessException exception) {
             // 도메인 검증 실패나 중복 UUID 내용 충돌은 재시도해도 성공하지 않으므로 영구 실패 처리한다.
             log.warn("채팅 저장 이벤트가 거절됐습니다. code={}, partition={}, offset={}",

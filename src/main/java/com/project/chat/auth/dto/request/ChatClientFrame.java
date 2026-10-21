@@ -26,7 +26,7 @@ public class ChatClientFrame {
     private final String before;
     private final Integer limit;
     private final UUID requestId;
-    // 접속자 목록 팝업은 페이지 단위로 불러와 서버가 큰 JSON 프레임을 생성하지 않게 한다.
-    private final Integer onlineOffset;
+    // 접속자 목록 팝업은 고정 순서 커서의 페이지 단위로 불러와 큰 JSON과 offset 이동을 방지한다.
+    private final UUID onlineCursor;
     private final Integer onlineLimit;
 }

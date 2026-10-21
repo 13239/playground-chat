@@ -12,5 +12,6 @@ public class ChatPresenceSnapshot {
     private final long onlineCount;
     private final List<ChatOnlineUserResponse> users;
     private final boolean hasMore;
-    private final Integer nextOnlineOffset;
+    // 내부 사용자 키는 WebSocket에서 연결 전용 무작위 커서로 바꿔 공개한다.
+    private final String nextUserId;
 }

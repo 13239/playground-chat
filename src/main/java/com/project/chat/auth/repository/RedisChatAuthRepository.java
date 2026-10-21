@@ -42,7 +42,8 @@ public class RedisChatAuthRepository {
         return redis.execute(CONSUME, List.of(
                 "chat:auth:ticket:" + hash, "chat:auth:pending:" + sid,
                 "auth:session:" + sid, "auth:user:sessions:" + uid, "auth:account:blocked:" + uid
-        ), List.of(sid, uid, ticket.getKeyThumbprint(), ticket.getOrigin(), ticket.getWebsocketUrl()))
+        ), List.of(sid, uid, ticket.getKeyThumbprint(), ticket.getOrigin(), ticket.getWebsocketUrl(),
+                Long.toString(ticket.getChatStartedAtMicros())))
                 .single()
                 .flatMap(result -> {
                     if (result == -1L) return Mono.error(new BusinessException(ErrorCode.INVALID_SESSION));
@@ -50,7 +51,8 @@ public class RedisChatAuthRepository {
                     return Mono.just(ChatPrincipal.builder()
                             .userId(ticket.getUserId()).sessionId(ticket.getSessionId())
                             .keyThumbprint(ticket.getKeyThumbprint())
-                            .nickname(ticket.getNickname()).avatarId(ticket.getAvatarId()).build());
+                            .nickname(ticket.getNickname()).avatarId(ticket.getAvatarId())
+                            .chatStartedAtMicros(ticket.getChatStartedAtMicros()).build());
                 })
                 .onErrorMap(DataAccessException.class, exception -> unavailable());
     }
@@ -60,7 +62,7 @@ public class RedisChatAuthRepository {
         String uid = principal.getUserId().toString();
         return redis.execute(VALIDATE, List.of(
                 "auth:session:" + sid, "auth:user:sessions:" + uid, "auth:account:blocked:" + uid
-        ), List.of(sid, uid, principal.getKeyThumbprint()))
+        ), List.of(sid, uid, principal.getKeyThumbprint(), Long.toString(principal.getChatStartedAtMicros())))
                 .single()
                 .flatMap(result -> result == 1L ? Mono.<Void>empty()
                         : Mono.error(new BusinessException(ErrorCode.INVALID_SESSION)))
@@ -74,17 +76,19 @@ public class RedisChatAuthRepository {
             String nickname = fields.get("nickname");
             String avatar = fields.get("avatarId");
             String key = fields.get("keyThumbprint");
+            long started = Long.parseLong(fields.get("chatStartedAtMicros"));
             if (uid <= 0 || nickname == null || nickname.isBlank() || nickname.codePointCount(0, nickname.length()) > 50
                     || avatar == null || !avatar.matches("[A-Z_]{2,20}")
                     || key == null || !(key.matches("[A-Za-z0-9_-]{43}") || key.equals("dev-http"))
-                    || fields.get("origin") == null || fields.get("websocketUrl") == null) {
+                    || started <= 0 || fields.get("origin") == null || fields.get("websocketUrl") == null) {
                 throw new IllegalArgumentException();
             }
             return ChatTicket.builder().userId(uid).sessionId(sid).keyThumbprint(key)
                     .nickname(nickname).avatarId(avatar)
                     .origin(fields.get("origin")).websocketUrl(fields.get("websocketUrl"))
                     .issuedAt(Instant.ofEpochMilli(Long.parseLong(fields.get("issuedAt"))))
-                    .expiresAt(Instant.ofEpochMilli(Long.parseLong(fields.get("expiresAt")))).build();
+                    .expiresAt(Instant.ofEpochMilli(Long.parseLong(fields.get("expiresAt"))))
+                    .chatStartedAtMicros(started).build();
         } catch (IllegalArgumentException | NullPointerException exception) {
             // 손상·만료·소비된 증명을 모두 같은 공개 오류로 처리한다.
             throw new BusinessException(ErrorCode.CHAT_TICKET_INVALID);

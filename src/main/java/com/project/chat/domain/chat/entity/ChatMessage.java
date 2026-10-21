@@ -52,10 +52,14 @@ public class ChatMessage {
     @Field("createdAt")
     private Instant createdAt;
 
+    // 로그인 이전 접수 메시지가 지연 저장되어도 공개되지 않도록 마이크로초 경계를 별도로 보존한다.
+    @Field("acceptedAtMicros")
+    private Long acceptedAtMicros;
+
     @Builder
     private ChatMessage(String conversationKey, ChatScope scope, ChatGameType gameType, Long roomId,
                         Long authorId, String authorNickname, String authorAvatarId,
-                        String clientMessageId, String content, Instant createdAt) {
+                        String clientMessageId, String content, Instant createdAt, Long acceptedAtMicros) {
         this.conversationKey = conversationKey;
         this.scope = scope;
         this.gameType = gameType;
@@ -66,5 +70,6 @@ public class ChatMessage {
         this.clientMessageId = clientMessageId;
         this.content = content;
         this.createdAt = createdAt;
+        this.acceptedAtMicros = acceptedAtMicros;
     }
 }
