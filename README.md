@@ -2,7 +2,7 @@
 
 Spring Boot 4.1.1·Java 25·WebFlux 기반의 독립 채팅 서비스다. MongoDB에는 대화 이력을 저장하고 Kafka로 메시지를 처리·전파하며 Redis는 접속 상태와 기존 로그인 세션 연동에 사용한다.
 
-현재는 **2단계: 기존 로그인과 채팅 접속 인증 연결**까지 구현했다. 메시지 저장·송수신, 접속자 목록과 홈 화면 연동은 이후 단계에서 추가한다.
+현재는 **4단계: WebSocket·Kafka 메시지 수신·저장 후 실시간 전파**까지 코드가 작성되어 있다. WebSocket 인증 후 홈 단일 채널에 메시지를 발행하고 과거 이력을 조회할 수 있다. 화면 실연동과 Redis 접속자 수·목록은 5~6단계에서 구현한다. 게임 방은 참가 권한 검증이 연결될 때까지 저장·조회·전송을 차단한다.
 
 ## 프로젝트 구조
 
@@ -10,15 +10,20 @@ back과 동일한 auth / domain / global 구분과 controller → service → re
 
 ```text
 com.project.chat
-├─ auth                         일회용 접속 증명·브라우저 키·인증 WebSocket
+├─ auth                         일회용 접속 증명·브라우저 키·인증 WebSocket/채팅 프레임
 │  ├─ dto                       builder 방식의 인증·제어 프레임
 │  ├─ proof                     로그인 키의 ES256 소유 증명
 │  ├─ repository                reactive Redis 증명 소비·세션 확인
 │  ├─ service                   인증과 현재 세션 검증
-│  └─ websocket                 인증·PING/PONG 연결 생명주기
+│  └─ websocket                 인증·PING/PONG·수신/이력/실시간 전파 연결 생명주기
 ├─ domain
 │  ├─ chat
 │  │  ├─ dto/internal           builder 방식의 검증된 채팅 대상
+│  │  ├─ dto/response           저장 메시지·커서 이력 응답 DTO
+│  │  ├─ entity                 MongoDB chat_messages 문서
+│  │  ├─ repository             reactive Mongo 저장·중복 식별·이력 검색
+│  │  ├─ service                인증/권한·내용 검증·멱등 저장·커서·로컬 전파
+│  │  ├─ kafka                  접수 이벤트/저장 소비/완료 이벤트 전파
 │  │  └─ enums                  공용·게임방 및 게임 종류
 │  └─ presence                  접속자 집계·목록 영역
 └─ global
@@ -109,14 +114,34 @@ back의 Redis 기동 검증 방식을 reactive 연결에 맞춰 확장했다. �
 
 채팅 대상·보안·이력·접속자 계약은 [chat-protocol.md](docs/chat-protocol.md)에 정리했다.
 
-## 검증
+## 3단계: 메시지 저장과 과거 이력
 
-실제 MongoDB·Redis·Kafka를 사용한 상태·보안·공통 오류 응답과 채팅 대상·환경 설정 검증 30개가 통과했다. 연결 장애 시 기동 중단도 서비스별로 확인했다. 사용자 작업 규칙에 따라 검증이 끝난 테스트 소스는 삭제했으며 실행 결과는 [stage-1-verification.md](docs/stage-1-verification.md)에 남겼다.
+MongoDB `chat_messages` 컬렉션에 인증된 사용자 ID, 닉네임·아바타 스냅샷, 본문, 요청 UUID, UTC 작성 시각을 저장한다. `GLOBAL`은 `global` 단일 채널이고, 게임 방은 추후 `game:gomoku:room:{roomId}` 형식을 사용한다. 클라이언트가 전송한 사용자·대화 키·작성 시각은 신뢰하지 않는다.
 
-2단계는 기존 back 보안 체인·실제 Redis·실제 WebSocket과 프론트 인증 모듈을 검증했다. 결과와 범위는 [stage-2-verification.md](docs/stage-2-verification.md)에 남긴다.
+- `ChatMessageService.save(principal, destination, clientMessageId, content)`: 로그인 세션을 재검증하고 권한 확인 후 저장한다. 본문은 양끝 공백 제거 후 1~1000 유니코드 코드 포인트, UTF-8 3500바이트 이하이며 제어 문자와 잘못된 서로게이트를 거부한다. 같은 발신자가 같은 대화에 같은 UUID와 동일 본문으로 재시도하면 첫 저장 결과를 반환한다. 동일 UUID를 다른 본문으로 재사용하면 `CHAT_MESSAGE_CONFLICT`다.
+- `ChatMessageService.history(principal, destination, before, requestedSize)`: 기본 30개, 최대 50개. 최신 페이지를 가져오되 응답 `messages`는 과거 → 최신순이며, 이전 페이지가 있으면 `nextCursor`를 사용한다. 잘못된 커서·크기는 명시적으로 거부한다.
+- 기동 시 `chat_history_v1 (conversationKey, createdAt DESC, _id DESC)`와 `chat_idempotency_v1 UNIQUE (conversationKey, authorId, clientMessageId)` 인덱스를 준비한다. 기존 컬렉션과 문서는 삭제하지 않으며 인덱스 충돌은 조용히 무시하지 않는다.
+- WebSocket 인증 완료 이후에만 이력을 조회할 수 있다. 일반 HTTP 채팅 API는 보안 설정상 여전히 열려 있지 않다. 게임 방 메시지는 **8단계 참가 권한 확인 전까지** `CHAT_ROOM_ACCESS_DENIED`로 차단한다.
 
-## 다음 단계
+자세한 데이터 계약과 경계 조건은 [stage-3-message-storage.md](docs/stage-3-message-storage.md)를 참고한다.
 
-3단계에서 MongoDB 문서·인덱스·커서 기반 이력을 구현한다. 이어 WebSocket·Kafka 메시지 처리, 접속자 집계, 홈 UI 순서로 진행한다. 홈의 전체 채널 선택 제거와 접속자 버튼·팝업은 프론트 연동 단계에 포함한다.
+## 4단계: Kafka 실시간 처리
 
-참고: [Spring Boot NoSQL 설정](https://docs.spring.io/spring-boot/reference/data/nosql.html), [WebFlux WebSocket](https://docs.spring.io/spring-framework/reference/web/webflux-websocket.html), [Spring Kafka 토픽 관리](https://docs.spring.io/spring-kafka/reference/kafka/configuring-topics.html).
+`/ws/chat`에서 기존 `AUTH` 인증을 마친 연결만 `CHAT_SEND`, `CHAT_HISTORY`, `PING`을 사용한다. 홈 채팅은 `scope: "GLOBAL"` 한 채널만 지원한다. 송신자·작성 시각·DB ID는 서버가 확정하고, `GAME_ROOM`은 참가자 권한 서비스 구현 이전까지 거부한다.
+
+- `CHAT_SEND` → 1차 인증/내용 검증 → 메시지 토픽에 broker 접수 → `CHAT_ACCEPTED` 응답 → Kafka 저장 소비자가 MongoDB 멱등 저장 → 전파 토픽에 기록 → 각 chat 서버에서 `CHAT_MESSAGE` 송신.
+- `CHAT_ACCEPTED`는 **저장 완료 확인이 아니다**. 저장 완료는 서버가 `CHAT_MESSAGE`에 반환한 `id`로 확인한다. Kafka 적어도 한 번(at-least-once) 재처리로 같은 ID가 여러 번 전파될 수 있으니 클라이언트는 `message.id`로 중복을 제거한다.
+- 저장 소비 그룹은 `playground-chat-store-v1` 하나를 공유하며, 완료 전파 소비 그룹은 인스턴스마다 달라 현재 연결이 붙은 모든 서버가 수신한다. 완료 전파는 서비스 재시작 때 재생하지 않는다. 놓친 데이터는 `CHAT_HISTORY`로 복구한다.
+- MongoDB 저장 완료 후 Kafka 전파 실패 시 동일 offset을 재처리하며 Unique Index로 중복 저장을 막는다. 단, 별도 영속 outbox가 없으므로 broker 접수 전 연결 오류 및 영구적인 Kafka 장애 상황은 송신 UUID를 유지해 재시도해야 한다.
+- 수신 프레임 상한은 4096바이트다. 사용자별 연결에서 `PING`은 최소 1초, `CHAT_SEND`는 최소 200ms, 이력 조회는 최소 500ms 간격이다. 90초간 수신이 없으면 연결이 종료되므로 화면 연동 시 주기적으로 PING을 전송한다.
+- 느린 수신 연결에는 128개 메시지 버퍼를 적용하며 초과 시 서버가 1013 코드로 해당 연결을 종료한다. 프론트엔드는 재접속 후 이력을 다시 조회해야 한다.
+
+요청·응답의 전체 JSON 예시와 실패 처리 기준은 [stage-4-protocol.md](docs/stage-4-protocol.md)에 있다. 배포 구성은 채팅 기능 완성 후 별도로 작업한다.
+
+## 검증 및 다음 단계
+
+첨부된 3단계 소스에 저장·이력·권한·인덱스 코드가 들어 있는 것을 정적 검토했다. 실행 환경에 Java 25와 MongoDB·Redis·Kafka 인스턴스가 없어 이번 4단계의 실제 Java 빌드·통합 테스트는 수행하지 않았다. 실행 검증은 개발자 Java 25 환경에서 수행해야 한다. 임시 테스트 코드는 추가하지 않았다.
+
+다음 5단계는 Redis 연결별 접속자 관리, 여러 탭 사용자 중복 집계 및 비정상 종료 정리다. 6단계에서 Next.js 채팅 UI·접속자 수·목록을 실데이터에 연결한다. 홈의 기존 채널 선택 UI는 이번 수정 파일에서 제거했다.
+
+참고: [WebFlux WebSocket](https://docs.spring.io/spring-framework/reference/web/webflux-websocket.html), [Spring Kafka](https://docs.spring.io/spring-kafka/reference/).

@@ -13,6 +13,13 @@ public enum ErrorCode {
     VALIDATION_FAILED(HttpStatus.BAD_REQUEST, "입력값이 올바르지 않습니다."),
     INVALID_REQUEST_BODY(HttpStatus.BAD_REQUEST, "요청 본문의 형식 또는 값이 올바르지 않습니다."),
     INVALID_CHAT_DESTINATION(HttpStatus.BAD_REQUEST, "채팅 대상이 올바르지 않습니다."),
+    // 3단계 MongoDB 이력·저장 입력 및 멱등성 충돌을 구분한다.
+    INVALID_CHAT_MESSAGE(HttpStatus.BAD_REQUEST, "메시지 내용 또는 요청 식별자가 올바르지 않습니다."),
+    INVALID_CHAT_CURSOR(HttpStatus.BAD_REQUEST, "채팅 이력 커서가 올바르지 않습니다."),
+    INVALID_CHAT_HISTORY_LIMIT(HttpStatus.BAD_REQUEST, "채팅 이력 조회 개수가 허용 범위를 벗어났습니다."),
+    INVALID_PRESENCE_REQUEST(HttpStatus.BAD_REQUEST, "접속자 목록의 페이지 범위가 올바르지 않습니다."),
+    CHAT_MESSAGE_CONFLICT(HttpStatus.CONFLICT, "동일한 메시지 요청 식별자가 다른 내용으로 이미 저장되었습니다."),
+    CHAT_ROOM_ACCESS_DENIED(HttpStatus.FORBIDDEN, "게임 방 채팅 참가 권한이 확인되지 않았습니다."),
 
     // 업무 HTTP 경로는 차단하고 WebSocket은 Origin·일회용 증명·브라우저 키로 별도 검증한다.
     AUTHENTICATION_REQUIRED(HttpStatus.UNAUTHORIZED, "로그인이 필요합니다."),
@@ -21,6 +28,7 @@ public enum ErrorCode {
     CHAT_PROOF_INVALID(HttpStatus.FORBIDDEN, "브라우저의 채팅 접속 증명을 확인할 수 없습니다."),
     CHAT_ORIGIN_INVALID(HttpStatus.FORBIDDEN, "허용되지 않은 채팅 연결입니다."),
     CHAT_CONTROL_RATE_LIMIT_EXCEEDED(HttpStatus.TOO_MANY_REQUESTS, "연결 확인 요청이 너무 많습니다."),
+    CHAT_CONNECTION_LIMIT_EXCEEDED(HttpStatus.TOO_MANY_REQUESTS, "동일 계정의 채팅 연결 수가 너무 많습니다."),
     INVALID_SESSION(HttpStatus.UNAUTHORIZED, "유효하지 않거나 만료된 로그인 세션입니다."),
     ACCESS_DENIED(HttpStatus.FORBIDDEN, "접근 권한이 없습니다."),
 
