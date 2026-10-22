@@ -77,7 +77,7 @@ back처럼 application-local.properties / application-dev.properties / applicati
 
 dev/prod의 필수 환경 변수는 CHAT_MONGODB_URI, CHAT_REDIS_HOST, CHAT_REDIS_DATABASE, CHAT_KAFKA_BOOTSTRAP_SERVERS다. Redis 포트·계정은 필요에 따라 추가한다. prod는 CHAT_TLS_CERTIFICATE, CHAT_TLS_PRIVATE_KEY, CHAT_KAFKA_SASL_JAAS_CONFIG, CHAT_KAFKA_REPLICATION_FACTOR, CHAT_KAFKA_MIN_IN_SYNC_REPLICAS도 필요하다. 인증서 값에는 file:/... 형식의 리소스 경로를 사용할 수 있다.
 
-Kafka 인증 방식은 CHAT_KAFKA_SECURITY_PROTOCOL과 CHAT_KAFKA_SASL_MECHANISM으로 설정한다. 사설 CA 등 추가 드라이버 설정은 해당 환경의 Spring 설정으로 공급한다. HTTP 개발 서버용 Docker 묶음은 back·front·chat과 로컬과 같은 MongoDB 8.0.34·Kafka 4.3.1을 함께 배포한다. 실제 prod 인증서·TLS 배포는 별도 구성이 필요하다. 설치·기존 DB 전환 절차는 [배포 안내](../deploy/README.md)를 따른다.
+Kafka 인증 방식은 CHAT_KAFKA_SECURITY_PROTOCOL과 CHAT_KAFKA_SASL_MECHANISM으로 설정한다. 사설 CA 등 추가 드라이버 설정은 해당 환경의 Spring 설정으로 공급한다. HTTP 개발 서버용 Docker 묶음은 back·front·chat·Nginx를 갱신하고, 서버에 직접 설치한 mongoDB(MongoDB 8.0.34)·kafka(Kafka 4.3.1)를 playground-infra 내부망에서 재사용한다. 실제 prod 인증서·TLS 배포는 별도 구성이 필요하다. 설치·기존 DB 전환 절차는 [배포 안내](../deploy/README.md)를 따른다.
 
 ```powershell
 .\gradlew.bat bootJar
