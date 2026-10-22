@@ -77,7 +77,7 @@ back처럼 application-local.properties / application-dev.properties / applicati
 
 dev/prod의 필수 환경 변수는 CHAT_MONGODB_URI, CHAT_REDIS_HOST, CHAT_REDIS_DATABASE, CHAT_KAFKA_BOOTSTRAP_SERVERS다. Redis 포트·계정은 필요에 따라 추가한다. prod는 CHAT_TLS_CERTIFICATE, CHAT_TLS_PRIVATE_KEY, CHAT_KAFKA_SASL_JAAS_CONFIG, CHAT_KAFKA_REPLICATION_FACTOR, CHAT_KAFKA_MIN_IN_SYNC_REPLICAS도 필요하다. 인증서 값에는 file:/... 형식의 리소스 경로를 사용할 수 있다.
 
-Kafka 인증 방식은 CHAT_KAFKA_SECURITY_PROTOCOL과 CHAT_KAFKA_SASL_MECHANISM으로 설정한다. 사설 CA 등 추가 드라이버 설정은 해당 환경의 Spring 설정으로 공급한다. 현재 운영 배포 스크립트에는 chat을 추가하지 않았다.
+Kafka 인증 방식은 CHAT_KAFKA_SECURITY_PROTOCOL과 CHAT_KAFKA_SASL_MECHANISM으로 설정한다. 사설 CA 등 추가 드라이버 설정은 해당 환경의 Spring 설정으로 공급한다. HTTP 개발 서버용 Docker 묶음은 back·front·chat과 로컬과 같은 MongoDB 8.0.34·Kafka 4.3.1을 함께 배포한다. 실제 prod 인증서·TLS 배포는 별도 구성이 필요하다. 설치·기존 DB 전환 절차는 [배포 안내](../deploy/README.md)를 따른다.
 
 ```powershell
 .\gradlew.bat bootJar
@@ -146,7 +146,7 @@ MongoDB `chat_messages` 컬렉션에 인증된 사용자 ID, 닉네임·아바�
 
 연결별 실시간 구독은 권한 확인 후 접속자 등록·`AUTHENTICATED` 응답·클라이언트 이력 요청보다 먼저 설치한다. 초기 처리 중 도착한 방송도 같은 128개 상한의 연결 버퍼에 보관하며, 그 전에 발생한 저장 메시지는 최초 이력 조회로 가져온다. 이력과 방송이 겹치면 기존 프론트가 메시지 ID로 병합한다. 버퍼 초과는 수신 시작 전에도 연결 오류로 처리하고, 정상 종료·오류·취소 시 실시간 구독을 함께 해제한다. 로그인 전 메시지를 제외하는 서버 경계는 버퍼에 넣기 전부터 적용한다.
 
-요청·응답의 전체 JSON 예시와 실패 처리 기준은 [stage-4-protocol.md](docs/stage-4-protocol.md)에 있다. 배포 구성은 채팅 기능 완성 후 별도로 작업한다.
+요청·응답의 전체 JSON 예시와 실패 처리 기준은 [stage-4-protocol.md](docs/stage-4-protocol.md)에 있다. HTTP 개발 배포는 [Docker 배포 안내](../deploy/README.md)의 Nginx WebSocket 경로와 공통 Redis 설정을 사용한다.
 
 ## 검증 및 다음 단계
 
@@ -154,7 +154,7 @@ Java 25 컴파일, 별도 임시 Redis·MongoDB와 실제 WebSocket을 사용하
 
 방송 수신 준비 개선은 격리된 임시 KRaft broker를 사용하는 검증 2개와 기동 차단·구독 공백·보안 경계·버퍼 포화·자원 정리 검증 24개를 통과했다. 실제 토픽 할당, 과거 방송 제외, 대기 방송 수신, 소비자 재시작과 첫 위치 조회 실패 후 재할당 복구를 확인했다. 이 검증의 테스트 소스도 실행 후 삭제하며 기존 사용자 Kafka·MongoDB·Redis에는 접근하지 않는다.
 
-접속자 관리·화면 연동과 오목 대기실의 방 참가 권한을 연결했다. chat 배포 연결은 후속 작업이다. 홈의 기존 채널 선택 UI는 제거했다.
+접속자 관리·화면 연동과 오목 대기실의 방 참가 권한을 연결했다. chat 배포는 Nginx의 `/ws/chat` 경로와 동일 Origin을 사용하며, MongoDB·Kafka는 전용 내부망과 데이터 볼륨으로 분리한다. 홈의 기존 채널 선택 UI는 제거했다.
 
 ## 접속 제한·로그인 경계·복구 계약
 

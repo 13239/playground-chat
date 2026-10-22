@@ -1,0 +1,20 @@
+# 로컬 자격 증명·인증서·빌드 결과를 Docker 빌드 환경에 전달하지 않는다.
+.git
+.gradle
+.idea
+.vscode
+build
+out
+bin
+.env*
+*.log
+*.pem
+*.key
+*.p12
+*.jks
+src/main/resources/application-local.properties
+src/main/resources/application.properties
+**/*.properties.example
+src/test
+README.md
+docs
