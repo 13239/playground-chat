@@ -4,6 +4,7 @@ import com.project.chat.auth.dto.request.ChatClientFrame;
 import com.project.chat.auth.dto.response.ChatServerFrame;
 import com.project.chat.auth.dto.response.ChatUserResponse;
 import com.project.chat.auth.service.ChatAuthenticationService;
+import com.project.chat.auth.service.ChatAccessPolicyChanges;
 import com.project.chat.auth.service.ChatConnectionAdmission;
 import com.project.chat.domain.chat.dto.internal.ChatDestination;
 import com.project.chat.domain.chat.dto.response.ChatHistoryResponse;
@@ -60,6 +61,7 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
     private final JsonMapper jsonMapper;
     private final ChatBroadcastReadiness broadcastReadiness;
     private final ChatDestinationAccessPolicy accessPolicy;
+    private final ChatAccessPolicyChanges policyChanges;
 
     @Override
     public Mono<Void> handle(WebSocketSession session) {
@@ -238,7 +240,8 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
         boolean global = target.getScope() == ChatScope.GLOBAL;
 
         // 자동 세션 연장 없이 로그아웃·만료·계정 차단·브라우저 키 변경을 최대 약 5초 주기로 반영한다.
-        Mono<Void> invalidation = Flux.interval(Duration.ofSeconds(global ? 5 : 2))
+        // 정책 변경 알림은 즉시 검사하고 Pub/Sub 유실 시에는 기존 주기 검사가 연결을 종료한다.
+        Mono<Void> invalidation = Flux.merge(Flux.interval(Duration.ofSeconds(global ? 5 : 2)), policyChanges.changes())
                 .concatMap(ignored -> global ? presence.renew(principal, connectionId)
                         : authentication.validate(principal).then(accessPolicy.authorize(principal, target)), 1).then();
         // AUTHENTICATED를 반드시 먼저 전송하며 이후 서버 전파와 클라이언트 요청을 병합한다.

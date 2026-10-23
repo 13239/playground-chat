@@ -5,7 +5,6 @@ import com.project.chat.global.exception.BusinessException;
 import com.project.chat.global.exception.ErrorCode;
 import com.project.chat.global.security.ChatPrincipal;
 import lombok.RequiredArgsConstructor;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
@@ -22,10 +21,8 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class RedisChatAuthRepository {
 
-    private static final RedisScript<Long> CONSUME = RedisScript.of(
-            new ClassPathResource("redis/chat/consume-ticket.lua"), Long.class);
-    private static final RedisScript<Long> VALIDATE = RedisScript.of(
-            new ClassPathResource("redis/chat/validate-session.lua"), Long.class);
+    private static final RedisScript<Long> CONSUME = AccessPolicyScripts.script("redis/chat/consume-ticket.lua", 3);
+    private static final RedisScript<Long> VALIDATE = AccessPolicyScripts.script("redis/chat/validate-session.lua", 1);
 
     private final ReactiveStringRedisTemplate redis;
 
@@ -46,6 +43,9 @@ public class RedisChatAuthRepository {
                 Long.toString(ticket.getChatStartedAtMicros())))
                 .single()
                 .flatMap(result -> {
+                    // 접속 제한은 4401로 연결을 종료하고 BFF의 세션 재확인에서 관리자의 안내 문구를 가져온다.
+                    if (result == -2L) return Mono.error(new BusinessException(ErrorCode.ACCESS_RESTRICTED));
+                    if (result == -3L) return Mono.error(new BusinessException(ErrorCode.ACCESS_POLICY_UNAVAILABLE));
                     if (result == -1L) return Mono.error(new BusinessException(ErrorCode.INVALID_SESSION));
                     if (result != 1L) return Mono.error(new BusinessException(ErrorCode.CHAT_TICKET_INVALID));
                     return Mono.just(ChatPrincipal.builder()
@@ -65,7 +65,8 @@ public class RedisChatAuthRepository {
         ), List.of(sid, uid, principal.getKeyThumbprint(), Long.toString(principal.getChatStartedAtMicros())))
                 .single()
                 .flatMap(result -> result == 1L ? Mono.<Void>empty()
-                        : Mono.error(new BusinessException(ErrorCode.INVALID_SESSION)))
+                        : Mono.error(new BusinessException(result == -2L ? ErrorCode.ACCESS_RESTRICTED
+                        : result == -3L ? ErrorCode.ACCESS_POLICY_UNAVAILABLE : ErrorCode.INVALID_SESSION)))
                 .onErrorMap(DataAccessException.class, exception -> unavailable());
     }
 

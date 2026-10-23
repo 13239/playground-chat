@@ -3,6 +3,7 @@ package com.project.chat.domain.chat.service;
 import com.project.chat.domain.chat.dto.internal.ChatBroadcastEvent;
 import com.project.chat.domain.chat.dto.internal.ChatDestination;
 import com.project.chat.global.security.ChatPrincipal;
+import com.project.chat.auth.service.ChatAuthenticationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import reactor.core.Disposable;
@@ -22,6 +23,7 @@ public class ChatOutboundHub {
     // 느린 연결이 다른 연결을 지연시키지 않도록 직접 전달하고 연결별 버퍼 초과 시 해당 연결을 종료한다.
     private final Sinks.Many<ChatBroadcastEvent> broadcasts = Sinks.many().multicast().directBestEffort();
     private final ChatDestinationAccessPolicy accessPolicy;
+    private final ChatAuthenticationService authentication;
 
     public synchronized void publish(ChatBroadcastEvent event) {
         // 서로 다른 Kafka 파티션 소비자가 동시에 발행해도 sink의 비직렬화 실패로 이벤트를 잃지 않는다.
@@ -63,7 +65,8 @@ public class ChatOutboundHub {
                                     }, error -> failed.tryEmitError(error), () -> buffer.tryEmitComplete()),
                             // 이미 버퍼에 들어온 방 방송도 퇴장·재입장 이후에는 전달하지 않는다.
                             ignored -> output.apply(buffer.asFlux().concatMap(event ->
-                                    accessPolicy.authorize(principal, destination).thenReturn(event), 1))
+                                    // 제한된 세션에는 주기 종료를 기다리는 동안에도 새 방송을 노출하지 않는다.
+                                    authentication.validate(principal).then(accessPolicy.authorize(principal, destination)).thenReturn(event), 1))
                                     .takeUntilOther(failed.asMono()), Disposable::dispose);
                 }));
     }

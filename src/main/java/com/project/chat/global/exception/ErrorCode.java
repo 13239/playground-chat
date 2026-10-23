@@ -33,6 +33,9 @@ public enum ErrorCode {
     CHAT_REQUEST_RATE_LIMIT_EXCEEDED(HttpStatus.TOO_MANY_REQUESTS, "채팅 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요."),
     CHAT_CONNECTION_LIMIT_EXCEEDED(HttpStatus.TOO_MANY_REQUESTS, "동일 계정의 채팅 연결 수가 너무 많습니다."),
     INVALID_SESSION(HttpStatus.UNAUTHORIZED, "유효하지 않거나 만료된 로그인 세션입니다."),
+    // 정책 오류는 일반 채팅 장애와 구분한다. 동적 안내 문구는 인증된 BFF 응답에서만 표시한다.
+    ACCESS_RESTRICTED(HttpStatus.UNAUTHORIZED, "서버 점검으로 로그인 세션을 종료했습니다."),
+    ACCESS_POLICY_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "접속 설정을 반영하고 있습니다. 잠시 후 다시 시도해 주세요."),
     ACCESS_DENIED(HttpStatus.FORBIDDEN, "접근 권한이 없습니다."),
 
     // 연결 실패의 내부 주소나 자격 증명을 응답 본문에 포함하지 않는다.
