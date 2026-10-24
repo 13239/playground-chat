@@ -13,7 +13,7 @@ import java.util.HexFormat;
 import org.springframework.web.util.pattern.PathPattern;
 import org.springframework.web.util.pattern.PathPatternParser;
 
-/** DB 권한 검사를 마친 back의 10초 일회용 증명을 요청 경로·쿼리에 묶어 원자 소비한다. */
+/** 관리자 조회·운영 점검을 수행하는 back의 10초 일회용 증명을 요청 경로·쿼리에 묶어 원자 소비한다. */
 @RequiredArgsConstructor
 public class AdminChatCapabilityFilter implements WebFilter {
     private static final PathPattern INTERNAL = new PathPatternParser().parse("/internal/admin/chat/**");
@@ -26,7 +26,10 @@ public class AdminChatCapabilityFilter implements WebFilter {
         // Security와 같은 디코딩 경로로 범위를 잡고 아래에서 정규 원문 경로만 승인한다.
         if (!INTERNAL.matches(request.getPath().pathWithinApplication()) && !path.startsWith("/internal/admin/chat")) return chain.filter(exchange);
         var headers = request.getHeaders().get("X-Chat-Admin-Capability");
-        if (request.getMethod() != HttpMethod.GET || !path.matches("/internal/admin/chat/messages(?:/[a-f0-9]{24})?")
+        boolean health = path.equals("/internal/admin/chat/health");
+        // 상태 확인은 쿼리를 받지 않는다. 메시지용 증명으로 경로·목적을 바꾸는 요청도 해시 대조로 차단한다.
+        if (request.getMethod() != HttpMethod.GET || !health && !path.matches("/internal/admin/chat/messages(?:/[a-f0-9]{24})?")
+                || health && request.getURI().getRawQuery() != null
                 || headers == null || headers.size() != 1 || !headers.getFirst().matches("[A-Za-z0-9_-]{43}")
                 || request.getHeaders().containsHeader("Origin")) return problems.write(exchange, ErrorCode.ACCESS_DENIED);
         String target = "GET\n" + request.getURI().getRawPath() + (request.getURI().getRawQuery() == null ? "" : "?" + request.getURI().getRawQuery());

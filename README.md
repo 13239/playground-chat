@@ -1,5 +1,7 @@
 # Playground Chat
 
+관리자 8단계 서비스 확인은 일회용 내부 증명으로 보호된 `GET /internal/admin/chat/health`를 사용한다. MongoDB 읽기·Redis·Kafka·방송 준비 상태를 비동기로 확인하고 종합 상태/시각만 반환한다. [8단계 안내](../playground/docs/admin-monitoring-stage8.md)의 확인 기준·설정·검증 범위를 따른다. 기존 홈 전용 공용 채팅과 일반 사용자 이력 정책은 유지한다.
+
 Spring Boot 4.1.1·Java 25·WebFlux 기반의 독립 채팅 서비스다. MongoDB에는 대화 이력을 저장하고 Kafka로 메시지를 처리·전파하며 Redis는 접속 상태와 기존 로그인 세션 연동에 사용한다.
 
 홈 단일 채널의 WebSocket·Kafka 메시지 처리, Redis 접속자 수·목록, Next.js 화면 연동을 구현했다. 홈 이력은 **현재 로그인 이후 접수한 대화만** 제공하며 오목 방은 back에서 확인한 현재 참가자만 저장·조회·수신할 수 있다.

@@ -53,7 +53,7 @@ public class SecurityConfig {
                                 "/actuator/health/liveness", "/actuator/health/readiness").permitAll()
                         // 업그레이드는 인증 완료가 아니다. AUTH 성공 전에는 업무 처리나 공개 사용자 응답을 만들지 않는다.
                         .pathMatchers(HttpMethod.GET, "/ws/chat").permitAll()
-                        .pathMatchers(HttpMethod.GET, "/internal/admin/chat/messages", "/internal/admin/chat/messages/{id}").permitAll()
+                        .pathMatchers(HttpMethod.GET, "/internal/admin/chat/messages", "/internal/admin/chat/messages/{id}", "/internal/admin/chat/health").permitAll()
                         .anyExchange().denyAll())
                 .build();
     }
