@@ -14,6 +14,7 @@ import com.project.chat.domain.chat.kafka.ChatBroadcastReadiness;
 import com.project.chat.domain.chat.service.ChatMessageService;
 import com.project.chat.domain.chat.service.ChatOutboundHub;
 import com.project.chat.domain.chat.service.ChatDestinationAccessPolicy;
+import com.project.chat.domain.chat.service.ChatProfiles;
 import com.project.chat.domain.presence.service.ChatPresenceService;
 import com.project.chat.domain.presence.dto.internal.ChatPresenceCursor;
 import com.project.chat.global.exception.BusinessException;
@@ -37,6 +38,9 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
 import java.util.UUID;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -62,6 +66,7 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
     private final ChatBroadcastReadiness broadcastReadiness;
     private final ChatDestinationAccessPolicy accessPolicy;
     private final ChatAccessPolicyChanges policyChanges;
+    private final ChatProfiles profiles;
 
     @Override
     public Mono<Void> handle(WebSocketSession session) {
@@ -125,6 +130,11 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
     }
 
     private Flux<ChatServerFrame> responses(ChatPrincipal principal, ChatDestination target, Flux<String> remaining) {
+        // 이 연결에서 이미 공개한 작성자만 알림 대상으로 삼고 메시지 창보다 조금 큰 유한 LRU를 유지한다.
+        Map<String, Boolean> knownAuthors = Collections.synchronizedMap(new LinkedHashMap<>(512, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) { return size() > 512; }
+        });
         UUID connectionId = UUID.randomUUID();
         ChatServerFrame ready = ChatServerFrame.builder().version(1).type("AUTHENTICATED")
                 .connectionId(connectionId).user(ChatUserResponse.from(principal)).build();
@@ -254,11 +264,23 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
         // AUTHENTICATED 송신·즉시 도착한 이력 요청보다 실시간 구독을 먼저 설치한다.
         // 이력 조회 중 발생한 방송은 연결 버퍼를 거쳐 전달하고 프론트에서 메시지 ID로 이력과 병합한다.
         return outboundHub.withSubscription(principal, target, events -> {
-            Flux<ChatServerFrame> live = events.map(event -> ChatServerFrame.builder().version(1).type("CHAT_MESSAGE")
-                    .message(event.toViewer(principal.getUserId())).build());
+            // Kafka에 남은 이전 닉네임도 전송 직전에 최신 프로필로 치환한다. Netty 이벤트 루프를 막지 않는다.
+            Flux<ChatServerFrame> live = events.concatMap(event -> profiles.resolve(event.getAuthorId(), event.getNickname(), event.getAvatarId())
+                    .map(profile -> ChatServerFrame.builder().version(1).type("CHAT_MESSAGE")
+                            .message(event.toViewer(principal.getUserId()).withProfile(profile)).build()), 1);
+            Flux<ChatServerFrame> profileUpdates = profiles.changes()
+                    .filter(profile -> knownAuthors.containsKey(profile.getAuthorKey()))
+                    .onBackpressureBuffer(128)
+                    .concatMap(profile -> authentication.validate(principal).then(accessPolicy.authorize(principal, target))
+                            .thenReturn(ChatServerFrame.builder().version(1).type("CHAT_PROFILE_CHANGED").profile(profile).build()), 1);
             return Flux.usingWhen(
                     (global ? presence.connect(principal, connectionId) : Mono.<Void>empty()).thenReturn(connectionId),
-                    ignored -> Flux.concat(Mono.just(ready), Flux.merge(controls, live, presenceUpdates))
+                    ignored -> Flux.concat(Mono.just(ready), Flux.merge(controls, live, presenceUpdates, profileUpdates))
+                            .doOnNext(frame -> {
+                                if (frame.getMessage() != null && frame.getMessage().getAuthorKey() != null) {
+                                    knownAuthors.put(frame.getMessage().getAuthorKey(), true);
+                                }
+                            })
                             // 수신 완료만으로는 live/PubSub이 계속 살아 있으므로 연결 종료를 별도 신호로 전달한다.
                             .takeUntilOther(Mono.firstWithSignal(invalidation, remoteClosed.asMono())),
                     ignored -> global ? cleanupPresence(principal, connectionId) : Mono.empty(),

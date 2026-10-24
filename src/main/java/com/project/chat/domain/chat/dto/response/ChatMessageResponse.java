@@ -12,7 +12,7 @@ import java.time.Instant;
 
 /** 저장된 메시지만 외부에 제공하며 내부 사용자 ID·로그인 세션·브라우저 키는 노출하지 않는다. */
 @Getter
-@Builder
+@Builder(toBuilder = true)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class ChatMessageResponse {
 
@@ -26,6 +26,15 @@ public class ChatMessageResponse {
     private final String content;
     private final Instant createdAt;
     private final boolean ownMessage;
+    // 메시지 작성자를 연결하는 공개 키와 프로필 세대만 전달하고 내부 계정 ID는 공개하지 않는다.
+    private final String authorKey;
+    private final Long profileRevision;
+
+    /** 저장 당시 본문·시각·작성자는 보존하고 화면에 표시할 이름·아바타만 최신 프로필로 통일한다. */
+    public ChatMessageResponse withProfile(ChatAuthorProfile profile) {
+        return toBuilder().authorKey(profile.getAuthorKey()).profileRevision(profile.getRevision())
+                .nickname(profile.getNickname()).avatarId(profile.getAvatarId()).build();
+    }
 
     public static ChatMessageResponse from(ChatMessage message, Long viewerId) {
         boolean own = message.getAuthorId().equals(viewerId);

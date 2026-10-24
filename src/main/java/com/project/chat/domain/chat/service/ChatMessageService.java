@@ -17,12 +17,16 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Flux;
+import com.project.chat.domain.chat.dto.response.ChatAuthorProfile;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
+import java.util.HashMap;
+import java.util.Map;
 
 /** 인증된 발신자의 메시지를 멱등 저장하고 같은 대화의 이전 이력만 커서로 조회한다. */
 @Service
@@ -37,6 +41,7 @@ public class ChatMessageService {
     private final ChatMessageRepository repository;
     private final ChatMessageHistoryRepository historyRepository;
     private final ChatRequestRateLimiter rateLimiter;
+    private final ChatProfiles profiles;
 
     public Mono<ChatMessageResponse> save(ChatPrincipal principal, ChatDestination destination,
                                           UUID clientMessageId, String content) {
@@ -47,7 +52,7 @@ public class ChatMessageService {
                 .filter(saved -> saved.getAcceptedAtMicros() != null
                         && saved.getAcceptedAtMicros() > principal.getMessageBoundaryMicros())
                 .switchIfEmpty(Mono.error(new BusinessException(ErrorCode.CHAT_MESSAGE_CONFLICT)))
-                .map(saved -> ChatMessageResponse.from(saved, principal.getUserId()));
+                .flatMap(saved -> response(saved, principal.getUserId()));
     }
 
     /** WS 요청을 Kafka로 접수하기 전에 실제 세션·채팅 대상·요청 내용을 검증한다. */
@@ -149,7 +154,7 @@ public class ChatMessageService {
                                     cursor == null ? null : cursor.getAcceptedAtMicros(),
                                     cursor == null ? null : cursor.getId(), size + 1)
                             .collectList())
-                    .map(results -> toPage(results, size, principal.getUserId()));
+                    .flatMap(results -> toPage(results, size, principal.getUserId()));
         });
     }
 
@@ -162,19 +167,27 @@ public class ChatMessageService {
                         destination.getConversationKey(), principal.getUserId(), clientMessageId.toString()))
                 .filter(message -> message.getAcceptedAtMicros() != null
                         && message.getAcceptedAtMicros() > principal.getMessageBoundaryMicros())
-                .map(message -> ChatMessageResponse.from(message, principal.getUserId()));
+                .flatMap(message -> response(message, principal.getUserId()));
     }
 
-    private ChatHistoryResponse toPage(List<ChatMessage> results, int size, Long viewerId) {
+    private Mono<ChatHistoryResponse> toPage(List<ChatMessage> results, int size, Long viewerId) {
         boolean hasMore = results.size() > size;
         List<ChatMessage> page = new ArrayList<>(results.subList(0, Math.min(size, results.size())));
         String nextCursor = hasMore ? ChatMessageCursor.encode(page.getLast()) : null;
         // MongoDB 조회는 최신순으로 수행하지만 화면은 과거 → 최신순으로 출력한다.
         Collections.reverse(page);
-        return ChatHistoryResponse.builder()
-                .messages(page.stream().map(message -> ChatMessageResponse.from(message, viewerId)).toList())
-                .hasMore(hasMore)
-                .nextCursor(nextCursor)
-                .build();
+        // 한 페이지의 같은 작성자는 Redis 조회 하나를 공유하고 최대 8개 조회만 병렬로 실행한다.
+        Map<Long, Mono<ChatAuthorProfile>> authors = new HashMap<>();
+        return Flux.fromIterable(page).flatMapSequential(message -> authors.computeIfAbsent(message.getAuthorId(), ignored ->
+                        profiles.resolve(message.getAuthorId(), message.getAuthorNickname(), message.getAuthorAvatarId()).cache())
+                .map(profile -> ChatMessageResponse.from(message, viewerId).withProfile(profile)), 8, 1)
+                .collectList().map(messages -> ChatHistoryResponse.builder()
+                        .messages(messages).hasMore(hasMore).nextCursor(nextCursor).build());
+    }
+
+    /** 저장 이력과 전송 결과 확인도 실시간 방송과 같은 현재 프로필을 사용한다. */
+    private Mono<ChatMessageResponse> response(ChatMessage message, Long viewerId) {
+        return profiles.resolve(message.getAuthorId(), message.getAuthorNickname(), message.getAuthorAvatarId())
+                .map(profile -> ChatMessageResponse.from(message, viewerId).withProfile(profile));
     }
 }
