@@ -36,9 +36,20 @@ public class ChatMessageIndexConfig {
             // 삭제 예정 ensureIndex 대신 현재 API를 사용하며 기존 v1 인덱스·문서는 삭제하지 않는다.
             indexes.createIndex(history)
                     .then(indexes.createIndex(idempotency))
+                    // 관리자 기간·방·작성자 조회의 정렬을 지원한다. 기존 공개 채팅 인덱스는 유지한다.
+                    .then(indexes.createIndex(adminIndex("chat_admin_time_v1")))
+                    .then(indexes.createIndex(adminIndex("chat_admin_room_v1", "scope", "gameType", "roomId")))
+                    .then(indexes.createIndex(adminIndex("chat_admin_author_v1", "authorId")))
+                    .then(indexes.createIndex(adminIndex("chat_admin_nickname_v1", "authorNickname")))
                     // 시작 시점에만 블로킹하며 WebFlux 요청 처리 스레드에서는 블로킹하지 않는다.
                     .block(Duration.ofSeconds(20));
             log.info("채팅 메시지 조회·멱등성 인덱스 준비 완료");
         };
+    }
+
+    private Index adminIndex(String name, String... keys) {
+        Index index = new Index();
+        for (String key : keys) index.on(key, Sort.Direction.ASC);
+        return index.on("createdAt", Sort.Direction.DESC).on("acceptedAtMicros", Sort.Direction.DESC).on("_id", Sort.Direction.DESC).named(name);
     }
 }

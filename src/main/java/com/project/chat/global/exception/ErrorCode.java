@@ -20,8 +20,10 @@ public enum ErrorCode {
     INVALID_PRESENCE_REQUEST(HttpStatus.BAD_REQUEST, "접속자 목록의 페이지 범위가 올바르지 않습니다."),
     CHAT_MESSAGE_CONFLICT(HttpStatus.CONFLICT, "동일한 메시지 요청 식별자가 다른 내용으로 이미 저장되었습니다."),
     CHAT_ROOM_ACCESS_DENIED(HttpStatus.FORBIDDEN, "게임 방 채팅 참가 권한이 확인되지 않았습니다."),
+    // 관리자 상세의 미존재는 일반 채팅 참가 거부와 구분한다.
+    ADMIN_CHAT_NOT_FOUND(HttpStatus.NOT_FOUND, "채팅 기록을 찾을 수 없습니다."),
 
-    // 업무 HTTP 경로는 차단하고 WebSocket은 Origin·일회용 증명·브라우저 키로 별도 검증한다.
+    // 브라우저용 업무 HTTP 경로는 차단하고 WebSocket은 Origin·일회용 증명·브라우저 키로 별도 검증한다.
     AUTHENTICATION_REQUIRED(HttpStatus.UNAUTHORIZED, "로그인이 필요합니다."),
     INVALID_AUTHENTICATION_REQUEST(HttpStatus.BAD_REQUEST, "채팅 접속 요청 형식이 올바르지 않습니다."),
     CHAT_TICKET_INVALID(HttpStatus.UNAUTHORIZED, "채팅 접속 증명이 유효하지 않습니다. 다시 연결해 주세요."),
