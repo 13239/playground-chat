@@ -2,6 +2,7 @@ package com.project.chat.domain.adminchat;
 
 import com.project.chat.domain.adminchat.dto.*;
 import com.project.chat.domain.chat.support.ChatMessageTime;
+import com.project.chat.domain.chat.support.ChatAvatarCatalog;
 import com.project.chat.global.exception.*;
 import lombok.RequiredArgsConstructor;
 import org.bson.Document;
@@ -65,7 +66,9 @@ public class AdminChatRepository {
         Number micros = doc.get("acceptedAtMicros", Number.class);
         var sentAt = micros != null && micros.longValue() > 0 ? ChatMessageTime.fromAcceptedAtMicros(micros.longValue()) : doc.getDate("createdAt").toInstant();
         return AdminChatMessage.builder().id(doc.getObjectId("_id").toHexString()).sentAt(sentAt)
-                .authorId(number(doc, "authorId")).authorNickname(doc.getString("authorNickname")).authorAvatarId(doc.getString("authorAvatarId"))
+                // 관리자 이력도 폐기된 이미지 대신 5번을 표시하며 저장된 메시지 자체는 수정하지 않는다.
+                .authorId(number(doc, "authorId")).authorNickname(doc.getString("authorNickname"))
+                .authorAvatarId(ChatAvatarCatalog.normalize(doc.getString("authorAvatarId")))
                 .scope(doc.getString("scope")).gameCode(doc.getString("gameType")).roomId(number(doc, "roomId")).content(doc.getString("content")).build();
     }
     private Long number(Document doc, String key) { Number value = doc.get(key, Number.class); return value == null ? null : value.longValue(); }

@@ -4,6 +4,7 @@ import com.project.chat.auth.dto.internal.ChatTicket;
 import com.project.chat.global.exception.BusinessException;
 import com.project.chat.global.exception.ErrorCode;
 import com.project.chat.global.security.ChatPrincipal;
+import com.project.chat.domain.chat.support.ChatAvatarCatalog;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
@@ -85,7 +86,8 @@ public class RedisChatAuthRepository {
                 throw new IllegalArgumentException();
             }
             return ChatTicket.builder().userId(uid).sessionId(sid).keyThumbprint(key)
-                    .nickname(nickname).avatarId(avatar)
+                    // 교체 직전에 발급된 정상 티켓도 기본 캐릭터로 이어 받아 재로그인을 강요하지 않는다.
+                    .nickname(nickname).avatarId(ChatAvatarCatalog.normalize(avatar))
                     .origin(fields.get("origin")).websocketUrl(fields.get("websocketUrl"))
                     .issuedAt(Instant.ofEpochMilli(Long.parseLong(fields.get("issuedAt"))))
                     .expiresAt(Instant.ofEpochMilli(Long.parseLong(fields.get("expiresAt"))))

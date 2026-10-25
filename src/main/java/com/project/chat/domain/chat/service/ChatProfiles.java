@@ -1,6 +1,7 @@
 package com.project.chat.domain.chat.service;
 
 import com.project.chat.domain.chat.dto.response.ChatAuthorProfile;
+import com.project.chat.domain.chat.support.ChatAvatarCatalog;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
@@ -27,7 +28,11 @@ public class ChatProfiles {
                 .<ChatAuthorProfile>handle((message, sink) -> {
                     try {
                         var profile = mapper.readValue(message.getMessage(), ChatAuthorProfile.class);
-                        if (valid(profile)) sink.next(profile);
+                        // 교체 전 Redis 알림도 새 카탈로그의 기본 캐릭터로 전달해 기존 연결을 유지한다.
+                        if (valid(profile)) sink.next(ChatAuthorProfile.builder()
+                                .authorKey(profile.getAuthorKey()).nickname(profile.getNickname())
+                                .avatarId(ChatAvatarCatalog.normalize(profile.getAvatarId()))
+                                .revision(profile.getRevision()).build());
                     } catch (RuntimeException ignored) { /* 허용한 공개 프로필 외의 알림은 전파하지 않는다. */ }
                 })
                 .retryWhen(Retry.backoff(Long.MAX_VALUE, Duration.ofSeconds(1)).maxBackoff(Duration.ofSeconds(10)))
@@ -45,7 +50,9 @@ public class ChatProfiles {
                             : redis.<String, String>opsForHash().putIfAbsent(key, "authorKey", UUID.randomUUID().toString())
                                     .then(redis.<String, String>opsForHash().get(key, "authorKey"));
                     return authorKey.map(value -> ChatAuthorProfile.builder().authorKey(value)
-                            .nickname(values.getOrDefault("nickname", nickname)).avatarId(values.getOrDefault("avatarId", avatarId))
+                            // 교체 전 저장값·캐시도 5번으로 표시하되 새로 선택한 캐릭터는 유지한다.
+                            .nickname(values.getOrDefault("nickname", nickname))
+                            .avatarId(ChatAvatarCatalog.normalize(values.getOrDefault("avatarId", avatarId)))
                             .revision(Long.parseLong(values.getOrDefault("revision", "0"))).build());
                 });
     }

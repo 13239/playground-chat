@@ -1,5 +1,7 @@
 package com.project.chat.domain.presence.repository;
 
+import com.project.chat.domain.chat.support.ChatAvatarCatalog;
+
 import com.project.chat.domain.presence.dto.response.ChatOnlineUserResponse;
 import com.project.chat.domain.presence.dto.response.ChatPresenceSnapshot;
 import com.project.chat.global.exception.BusinessException;
@@ -97,7 +99,8 @@ public class RedisChatPresenceRepository {
                 .collectMap(Map.Entry::getKey, Map.Entry::getValue)
                 .filter(values -> values.containsKey("nickname") && values.containsKey("avatarId"))
                 .map(values -> ChatOnlineUserResponse.builder()
-                        .nickname(values.get("nickname")).avatarId(values.get("avatarId")).build());
+                        // 기존 접속자의 Redis 리스가 남아 있어도 새 카탈로그 밖의 이미지는 노출하지 않는다.
+                        .nickname(values.get("nickname")).avatarId(ChatAvatarCatalog.normalize(values.get("avatarId"))).build());
     }
 
     private Mono<Long> execute(RedisScript<Long> script, long userId, List<String> args) {

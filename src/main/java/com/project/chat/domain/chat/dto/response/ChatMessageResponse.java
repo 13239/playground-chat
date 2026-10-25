@@ -5,6 +5,7 @@ import com.project.chat.domain.chat.entity.ChatMessage;
 import com.project.chat.domain.chat.enums.ChatGameType;
 import com.project.chat.domain.chat.enums.ChatScope;
 import com.project.chat.domain.chat.support.ChatMessageTime;
+import com.project.chat.domain.chat.support.ChatAvatarCatalog;
 import lombok.Builder;
 import lombok.Getter;
 
@@ -33,7 +34,7 @@ public class ChatMessageResponse {
     /** 저장 당시 본문·시각·작성자는 보존하고 화면에 표시할 이름·아바타만 최신 프로필로 통일한다. */
     public ChatMessageResponse withProfile(ChatAuthorProfile profile) {
         return toBuilder().authorKey(profile.getAuthorKey()).profileRevision(profile.getRevision())
-                .nickname(profile.getNickname()).avatarId(profile.getAvatarId()).build();
+                .nickname(profile.getNickname()).avatarId(ChatAvatarCatalog.normalize(profile.getAvatarId())).build();
     }
 
     public static ChatMessageResponse from(ChatMessage message, Long viewerId) {
@@ -46,7 +47,8 @@ public class ChatMessageResponse {
                 .gameType(message.getGameType())
                 .roomId(message.getRoomId())
                 .nickname(message.getAuthorNickname())
-                .avatarId(message.getAuthorAvatarId())
+                // 오래된 메시지의 폐기된 아바타는 5번으로 표시하고 원문은 보존한다.
+                .avatarId(ChatAvatarCatalog.normalize(message.getAuthorAvatarId()))
                 .content(message.getContent())
                 // MongoDB Date의 밀리초 절삭과 무관하게 방송·이력·상태 응답의 최초 접수 시각을 일치시킨다.
                 .createdAt(ChatMessageTime.fromAcceptedAtMicros(message.getAcceptedAtMicros(), message.getCreatedAt()))
