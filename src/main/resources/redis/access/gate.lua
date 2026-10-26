@@ -10,7 +10,7 @@ local function access_role(role, revision)
         or not policy[4] or policy[4] == '' then return -3 end
     if not role or not revision or string.len(revision) ~= 19 or not string.match(revision, '^%d+$') then return 0 end
     if revision > policy[2] then return -3 end
-    if role == 'SUPER_ADMIN' then return 1 end
+    if role == 'ROOT' then return 1 end
     if state ~= 'ready' then return -3 end
     if policy[3] == 'true'
         and redis.call('HGET', policyKey, 'allow:' .. role) ~= 'true' then return -2 end
