@@ -54,7 +54,8 @@ import java.util.concurrent.atomic.AtomicReference;
 public class ChatConnectionWebSocketHandler implements WebSocketHandler {
 
     private static final int MAX_PENDING_AUTHENTICATIONS = 128;
-    private static final int MAX_FRAME_BYTES = 4096;
+    // 최대 1,000자 이모지 본문과 친구 대화의 UUID 메타데이터를 함께 수용한다.
+    private static final int MAX_FRAME_BYTES = 8192;
     private final AtomicInteger pendingAuthentications = new AtomicInteger();
 
     private final ChatAuthenticationService authentication;
@@ -67,6 +68,7 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
     private final ChatDestinationAccessPolicy accessPolicy;
     private final ChatAccessPolicyChanges policyChanges;
     private final ChatProfiles profiles;
+    private final com.project.chat.domain.social.SocialConnection social;
 
     @Override
     public Mono<Void> handle(WebSocketSession session) {
@@ -106,6 +108,7 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
                 ChatDestination target = ChatDestination.builder().scope(auth.getScope() == null ? ChatScope.GLOBAL : auth.getScope())
                         .gameType(auth.getGameType()).roomId(auth.getRoomId()).build();
                 if (auth.getClientMessageId() != null || auth.getContent() != null || auth.getBefore() != null || auth.getLimit() != null
+                        || auth.getConversationId() != null || auth.getPage() != null || auth.getMessageId() != null
                         || auth.getOnlineCursor() != null || auth.getOnlineLimit() != null
                         || auth.getRequestId() != null) return Flux.error(new BusinessException(ErrorCode.INVALID_AUTHENTICATION_REQUEST));
                 return authentication.authenticate(auth)
@@ -130,6 +133,7 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
     }
 
     private Flux<ChatServerFrame> responses(ChatPrincipal principal, ChatDestination target, Flux<String> remaining) {
+        if (target.getScope() == ChatScope.SOCIAL) return social.responses(principal, remaining);
         // 이 연결에서 이미 공개한 작성자만 알림 대상으로 삼고 메시지 창보다 조금 큰 유한 LRU를 유지한다.
         Map<String, Boolean> knownAuthors = Collections.synchronizedMap(new LinkedHashMap<>(512, 0.75f, true) {
             @Override
@@ -150,6 +154,10 @@ public class ChatConnectionWebSocketHandler implements WebSocketHandler {
             ChatClientFrame frame = decode(text);
             if (!Integer.valueOf(1).equals(frame.getVersion()) || frame.getTicket() != null
                     || frame.getProof() != null || frame.getType() == null) {
+                return Flux.error(new BusinessException(ErrorCode.INVALID_AUTHENTICATION_REQUEST));
+            }
+            // 소셜 필드는 본인 전용 SOCIAL 연결에서만 허용한다.
+            if (frame.getConversationId() != null || frame.getPage() != null || frame.getMessageId() != null) {
                 return Flux.error(new BusinessException(ErrorCode.INVALID_AUTHENTICATION_REQUEST));
             }
             // 접속자 페이지 필드는 PRESENCE_GET에서만 허용한다.

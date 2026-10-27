@@ -10,6 +10,7 @@ import lombok.extern.jackson.Jacksonized;
 @Jacksonized
 public class ChatAuthorProfile {
     private final String authorKey;
+    private final String publicUserId;
     private final String nickname;
     private final String avatarId;
     private final long revision;

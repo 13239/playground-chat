@@ -22,6 +22,7 @@ public class ChatMessageResponse {
     private final ChatScope scope;
     private final ChatGameType gameType;
     private final Long roomId;
+    private final String conversationId;
     private final String nickname;
     private final String avatarId;
     private final String content;
@@ -29,11 +30,12 @@ public class ChatMessageResponse {
     private final boolean ownMessage;
     // 메시지 작성자를 연결하는 공개 키와 프로필 세대만 전달하고 내부 계정 ID는 공개하지 않는다.
     private final String authorKey;
+    private final String publicUserId;
     private final Long profileRevision;
 
     /** 저장 당시 본문·시각·작성자는 보존하고 화면에 표시할 이름·아바타만 최신 프로필로 통일한다. */
     public ChatMessageResponse withProfile(ChatAuthorProfile profile) {
-        return toBuilder().authorKey(profile.getAuthorKey()).profileRevision(profile.getRevision())
+        return toBuilder().authorKey(profile.getAuthorKey()).publicUserId(profile.getPublicUserId()).profileRevision(profile.getRevision())
                 .nickname(profile.getNickname()).avatarId(ChatAvatarCatalog.normalize(profile.getAvatarId())).build();
     }
 
@@ -46,6 +48,7 @@ public class ChatMessageResponse {
                 .scope(message.getScope())
                 .gameType(message.getGameType())
                 .roomId(message.getRoomId())
+                .conversationId(message.getConversationId())
                 .nickname(message.getAuthorNickname())
                 // 오래된 메시지의 폐기된 아바타는 5번으로 표시하고 원문은 보존한다.
                 .avatarId(ChatAvatarCatalog.normalize(message.getAuthorAvatarId()))

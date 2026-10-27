@@ -39,6 +39,30 @@ public class ChatOutboundHub {
         return withSubscription(principal, destination, Function.identity());
     }
 
+    /** 유한 버퍼 뒤에서 회원별 권한을 검사할 개인·그룹 이벤트만 제공한다. */
+    public Flux<ChatBroadcastEvent> socialEvents() {
+        return broadcasts.asFlux().filter(event -> event.getScope() == com.project.chat.domain.chat.enums.ChatScope.SOCIAL)
+                .onBackpressureBuffer(CONNECTION_BUFFER);
+    }
+
+    /** 초기 비공개 요약을 읽기 전에 방송을 구독해 인증 응답 뒤의 수신 공백을 유한 버퍼로 메운다. */
+    public <T> Flux<T> withSocialSubscription(Function<Flux<ChatBroadcastEvent>, Flux<T>> output) {
+        return Flux.defer(() -> {
+            var buffer = Sinks.many().unicast().<ChatBroadcastEvent>onBackpressureBuffer(
+                    Queues.<ChatBroadcastEvent>get(CONNECTION_BUFFER).get());
+            Sinks.Empty<Void> failed = Sinks.empty();
+            return Flux.using(
+                    () -> broadcasts.asFlux()
+                            .filter(event -> event.getScope() == com.project.chat.domain.chat.enums.ChatScope.SOCIAL)
+                            .subscribe(event -> {
+                                Sinks.EmitResult result = buffer.tryEmitNext(event);
+                                if (result == Sinks.EmitResult.FAIL_OVERFLOW || result == Sinks.EmitResult.FAIL_ZERO_SUBSCRIBER)
+                                    failed.tryEmitError(Exceptions.failWithOverflow("친구 채팅 연결 버퍼를 초과했습니다."));
+                            }, error -> failed.tryEmitError(error), () -> buffer.tryEmitComplete()),
+                    ignored -> output.apply(buffer.asFlux()).takeUntilOther(failed.asMono()), Disposable::dispose);
+        });
+    }
+
     /** 권한 확인과 실시간 구독을 끝낸 뒤 인증 완료·이력 처리를 시작하며 공백 동안 최대 128개만 보관한다. */
     public <T> Flux<T> withSubscription(ChatPrincipal principal, ChatDestination destination,
                                       Function<Flux<ChatBroadcastEvent>, Flux<T>> output) {

@@ -21,6 +21,10 @@ public class ChatClientFrame {
     private final ChatScope scope;
     private final ChatGameType gameType;
     private final Long roomId;
+    // 소셜 연결은 하나를 유지하며 개인·그룹방의 공개 UUID만 명령마다 검증한다.
+    private final String conversationId;
+    private final Integer page;
+    private final String messageId;
     private final UUID clientMessageId;
     private final String content;
     private final String before;

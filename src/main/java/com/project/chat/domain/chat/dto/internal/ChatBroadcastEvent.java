@@ -23,6 +23,7 @@ public class ChatBroadcastEvent {
     private final ChatScope scope;
     private final ChatGameType gameType;
     private final Long roomId;
+    private final String conversationId;
     private final Long authorId;
     private final String nickname;
     private final String avatarId;
@@ -40,6 +41,7 @@ public class ChatBroadcastEvent {
                 .scope(message.getScope())
                 .gameType(message.getGameType())
                 .roomId(message.getRoomId())
+                .conversationId(message.getConversationId())
                 .authorId(message.getAuthorId())
                 .nickname(message.getAuthorNickname())
                 .avatarId(message.getAuthorAvatarId())
@@ -59,6 +61,7 @@ public class ChatBroadcastEvent {
                 .scope(scope)
                 .gameType(gameType)
                 .roomId(roomId)
+                .conversationId(conversationId)
                 .nickname(nickname)
                 .avatarId(avatarId)
                 .content(content)

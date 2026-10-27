@@ -28,6 +28,7 @@ public class ChatKafkaPublisher {
         return Mono.defer(() -> send(properties.getMessagesTopic(),
                 ChatDestination.builder().scope(command.getScope())
                         .gameType(command.getGameType()).roomId(command.getRoomId())
+                        .conversationId(command.getConversationId())
                         .build().getConversationKey(), jsonMapper.writeValueAsString(command)));
     }
 

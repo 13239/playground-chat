@@ -36,7 +36,7 @@ public class ChatBroadcastConsumer {
                 throw new IllegalArgumentException("Invalid broadcast event");
             }
             String expectedKey = ChatDestination.builder().scope(event.getScope())
-                    .gameType(event.getGameType()).roomId(event.getRoomId()).build().getConversationKey();
+                    .gameType(event.getGameType()).roomId(event.getRoomId()).conversationId(event.getConversationId()).build().getConversationKey();
             if (!expectedKey.equals(event.getConversationKey()) || !expectedKey.equals(record.key())) {
                 throw new IllegalArgumentException("Wrong conversation key");
             }

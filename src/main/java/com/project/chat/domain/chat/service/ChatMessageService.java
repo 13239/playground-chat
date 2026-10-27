@@ -63,16 +63,21 @@ public class ChatMessageService {
             if (clientMessageId == null || principal == null || destination == null) {
                 return Mono.error(new BusinessException(ErrorCode.INVALID_CHAT_MESSAGE));
             }
+            if (destination.getScope() == com.project.chat.domain.chat.enums.ChatScope.SOCIAL && destination.getConversationId() == null)
+                return Mono.error(new BusinessException(ErrorCode.INVALID_CHAT_DESTINATION));
             // 클라이언트의 작성자·시각·대화키는 받지 않는다. 현재 인증 주체로만 확정한다.
             return authentication.validate(principal)
                     .then(accessPolicy.authorize(principal, destination))
                     .then(rateLimiter.send(principal.getUserId()))
+                    // 접수 시각 뒤에도 현재 권한을 검사해 회수 이전의 검증을 새 전송에 재사용하지 않는다.
+                    .delayUntil(acceptedAt -> accessPolicy.authorize(principal, destination))
                     .map(acceptedAt -> ChatSendCommand.builder()
                             .version(1)
                             .clientMessageId(clientMessageId)
                             .scope(destination.getScope())
                             .gameType(destination.getGameType())
                             .roomId(destination.getRoomId())
+                            .conversationId(destination.getConversationId())
                             .authorId(principal.getUserId())
                             .authorNickname(principal.getNickname())
                             .authorAvatarId(principal.getAvatarId())
@@ -94,10 +99,12 @@ public class ChatMessageService {
                 return Mono.error(new BusinessException(ErrorCode.INVALID_CHAT_MESSAGE));
             }
             String validated = ChatMessageContentValidator.validate(command.getContent());
+            if (command.getScope() == com.project.chat.domain.chat.enums.ChatScope.SOCIAL && command.getConversationId() == null)
+                return Mono.error(new BusinessException(ErrorCode.INVALID_CHAT_DESTINATION));
             // 배포 전 Kafka에 접수된 구버전 요청은 유실하지 않고 보존한다. 시각이 없으므로 공개 범위에는 넣지 않는다.
             long acceptedAtMicros = command.getAcceptedAtMicros() == null ? 0 : command.getAcceptedAtMicros();
             ChatDestination destination = ChatDestination.builder()
-                    .scope(command.getScope()).gameType(command.getGameType()).roomId(command.getRoomId()).build();
+                    .scope(command.getScope()).gameType(command.getGameType()).roomId(command.getRoomId()).conversationId(command.getConversationId()).build();
             // 외부 클라이언트는 이 함수를 호출할 수 없다. Kafka 토픽 쓰기 권한은 chat 서비스로 제한해야 한다.
             ChatPrincipal sender = ChatPrincipal.builder()
                     .userId(command.getAuthorId()).nickname(command.getAuthorNickname())
@@ -117,6 +124,7 @@ public class ChatMessageService {
                 .scope(destination.getScope())
                 .gameType(destination.getGameType())
                 .roomId(destination.getRoomId())
+                .conversationId(destination.getConversationId())
                 .authorId(principal.getUserId())
                 .authorNickname(principal.getNickname())
                 .authorAvatarId(principal.getAvatarId())

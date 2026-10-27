@@ -8,6 +8,7 @@ import org.springframework.http.HttpStatus;
 @Getter
 @RequiredArgsConstructor
 public enum ErrorCode {
+    SOCIAL_ACCESS_DENIED(HttpStatus.FORBIDDEN, "친구 또는 그룹 대화 권한이 없습니다."),
 
     // WebFlux 입력 검증과 JSON 역직렬화 실패를 구분한다.
     VALIDATION_FAILED(HttpStatus.BAD_REQUEST, "입력값이 올바르지 않습니다."),

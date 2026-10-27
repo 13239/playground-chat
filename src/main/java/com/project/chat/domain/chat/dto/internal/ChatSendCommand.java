@@ -18,6 +18,7 @@ public class ChatSendCommand {
     private final ChatScope scope;
     private final ChatGameType gameType;
     private final Long roomId;
+    private final String conversationId;
     private final Long authorId;
     private final String authorNickname;
     private final String authorAvatarId;

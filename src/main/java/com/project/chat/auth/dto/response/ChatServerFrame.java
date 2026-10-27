@@ -18,6 +18,8 @@ import java.util.UUID;
 public class ChatServerFrame {
     private final int version;
     private final String type;
+    // 개인 방 데이터는 본인의 소셜 연결에만 전달하며 공용 접속자 프레임과 섞지 않는다.
+    private final com.project.chat.domain.social.SocialPayload social;
     private final UUID connectionId;
     private final ChatUserResponse user;
     private final UUID clientMessageId;

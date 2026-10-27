@@ -15,9 +15,11 @@ import reactor.core.publisher.Mono;
 @Component @RequiredArgsConstructor
 public class ChatDestinationAccessPolicy {
     private final RedisRoomChatAccessRepository rooms;
+    private final com.project.chat.domain.social.SocialAccessRepository social;
 
     /** AUTH 시 대상을 고정하고 로그인 시각과 현재 입장 시각 중 늦은 경계만 공개한다. */
     public Mono<ChatPrincipal> bind(ChatPrincipal principal, ChatDestination destination) {
+        if (destination.getScope() == ChatScope.SOCIAL && destination.getConversationId() == null) return Mono.just(principal);
         if (destination.getScope() == ChatScope.GLOBAL) return Mono.just(principal);
         if (destination.getGameType() != ChatGameType.GOMOKU) return denied();
         return rooms.membership(destination.getRoomId(), principal.getUserId()).map(value -> {
@@ -28,6 +30,9 @@ public class ChatDestinationAccessPolicy {
     }
 
     public Mono<Void> authorize(ChatPrincipal principal, ChatDestination destination) {
+        if (destination.getScope() == ChatScope.SOCIAL) return social.require(principal.getUserId(), destination.getConversationId())
+                .filter(com.project.chat.domain.social.SocialAccessRepository.Access::isWritable)
+                .switchIfEmpty(Mono.error(new BusinessException(ErrorCode.SOCIAL_ACCESS_DENIED))).then();
         if (destination.getScope() == ChatScope.GLOBAL) return principal.getRoomId() == null ? Mono.empty() : denied();
         // 실제 게임방 참가/퇴장 상태를 요청·전파마다 다시 확인하고 클라이언트의 방 번호만 신뢰하지 않는다.
         if (destination.getGameType() != ChatGameType.GOMOKU || !destination.getRoomId().equals(principal.getRoomId())) return denied();

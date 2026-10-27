@@ -33,6 +33,8 @@ public class ChatMessage {
 
     @Field("roomId")
     private Long roomId;
+    // 개인·그룹 대화는 공개 UUID로 구분하며 기존 게임 방 번호는 유지한다.
+    private String conversationId;
 
     @Field("authorId")
     private Long authorId;
@@ -59,11 +61,12 @@ public class ChatMessage {
     @Builder
     private ChatMessage(String conversationKey, ChatScope scope, ChatGameType gameType, Long roomId,
                         Long authorId, String authorNickname, String authorAvatarId,
-                        String clientMessageId, String content, Instant createdAt, Long acceptedAtMicros) {
+                        String clientMessageId, String content, Instant createdAt, Long acceptedAtMicros, String conversationId) {
         this.conversationKey = conversationKey;
         this.scope = scope;
         this.gameType = gameType;
         this.roomId = roomId;
+        this.conversationId = conversationId;
         this.authorId = authorId;
         this.authorNickname = authorNickname;
         this.authorAvatarId = authorAvatarId;

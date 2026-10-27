@@ -28,7 +28,9 @@ public class AdminChatRepository {
     public Mono<AdminChatPage> search(AdminChatSearch search) { return page(search, search.getPage(), true); }
 
     private Mono<AdminChatPage> page(AdminChatSearch search, int page, boolean correctPage) {
-        var criteria = Criteria.where("createdAt").gte(Date.from(search.getFrom())).lt(Date.from(search.getUntil()));
+        // 기존 관리자 전체/게임 조회 권한으로 개인 대화가 자동 공개되지 않게 별도 범위를 유지한다.
+        var criteria = Criteria.where("createdAt").gte(Date.from(search.getFrom())).lt(Date.from(search.getUntil()))
+                .andOperator(publicScopes());
         if (search.getScope() != null) criteria.and("scope").is(search.getScope());
         else if (search.getGameCode() != null || search.getRoomId() != null) criteria.and("scope").is("GAME_ROOM");
         if (search.getGameCode() != null) criteria.and("gameType").is(search.getGameCode());
@@ -55,10 +57,15 @@ public class AdminChatRepository {
 
     public Mono<AdminChatMessage> find(String id) {
         if (!id.matches("[a-f0-9]{24}")) return Mono.error(new BusinessException(ErrorCode.VALIDATION_FAILED));
-        Query query = Query.query(Criteria.where("_id").is(new ObjectId(id))).maxTime(Duration.ofSeconds(3));
+        Query query = Query.query(Criteria.where("_id").is(new ObjectId(id)).andOperator(publicScopes())).maxTime(Duration.ofSeconds(3));
         query.fields().include(FIELDS);
         return mongo.findOne(query, Document.class, COLLECTION).map(this::map)
                 .switchIfEmpty(Mono.error(new BusinessException(ErrorCode.ADMIN_CHAT_NOT_FOUND)));
+    }
+
+    /** 범위 도입 전의 기존 문서는 유지하고 개인 대화와 알 수 없는 새 범위는 공개하지 않는다. */
+    private Criteria publicScopes() {
+        return new Criteria().orOperator(Criteria.where("scope").in("GLOBAL", "GAME_ROOM"), Criteria.where("scope").is(null));
     }
 
     private AdminChatMessage map(Document doc) {
