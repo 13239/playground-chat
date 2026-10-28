@@ -4,6 +4,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
 import org.springframework.data.redis.listener.ChannelTopic;
+import org.springframework.data.redis.connection.SubscriptionListener;
 import reactor.core.publisher.*;
 import java.time.Duration;
 import java.util.*;
@@ -37,9 +38,29 @@ public class SocialConnection {
 
     private ChatServerFrame frame(String type,SocialPayload payload){return ChatServerFrame.builder().version(1).type(type).social(payload).build();}
     public Flux<ChatServerFrame> responses(ChatPrincipal principal,Flux<String> incoming) {
-        return hub.withSocialSubscription(events->responses(principal,incoming,events));
+        return hub.withSocialSubscription(events->withChanges(principal,incoming,events));
     }
-    private Flux<ChatServerFrame> responses(ChatPrincipal principal,Flux<String> incoming,Flux<com.project.chat.domain.chat.dto.internal.ChatBroadcastEvent> events) {
+    /** 15초 초대가 초기 요약 조회 사이에 유실되지 않게 Redis 구독을 먼저 확정하고 변경 신호 하나만 보관한다. */
+    private Flux<ChatServerFrame> withChanges(ChatPrincipal principal,Flux<String> incoming,
+            Flux<com.project.chat.domain.chat.dto.internal.ChatBroadcastEvent> events) {
+        return Flux.defer(()->{
+            Sinks.Empty<Void> subscribed=Sinks.empty();
+            Sinks.Many<ChatServerFrame> changes=Sinks.many().replay().latest();
+            var subscription=new SubscriptionListener() {
+                @Override public void onChannelSubscribed(byte[] channel,long count){subscribed.tryEmitEmpty();}
+            };
+            // using이 구독 전 취소·인증 종료·오류에서도 Redis 구독을 해제한다. receiveLater의 취소 공백을 만들지 않는다.
+            return Flux.using(()->listener.receive(List.of(ChannelTopic.of("social:changed:v1")),subscription)
+                    .filter(message->Long.toString(principal.getUserId()).equals(message.getMessage()))
+                    .subscribe(message->changes.tryEmitNext(frame("SOCIAL_CHANGED",null)),error->{
+                        subscribed.tryEmitError(error);changes.tryEmitError(error);
+                    }),
+                ignored->subscribed.asMono().thenMany(responses(principal,incoming,events,changes.asFlux())),
+                reactor.core.Disposable::dispose);
+        });
+    }
+    private Flux<ChatServerFrame> responses(ChatPrincipal principal,Flux<String> incoming,
+            Flux<com.project.chat.domain.chat.dto.internal.ChatBroadcastEvent> events,Flux<ChatServerFrame> changes) {
         long user=principal.getUserId();
         AtomicReference<String> active=new AtomicReference<>();
         AtomicReference<String> historyRoom=new AtomicReference<>();
@@ -86,8 +107,11 @@ public class SocialConnection {
                     .defaultIfEmpty(ChatServerFrame.builder().version(1).type("CHAT_STATUS_RESULT").stored(false).clientMessageId(c.getClientMessageId()).build());
                 default -> Mono.error(new BusinessException(ErrorCode.INVALID_AUTHENTICATION_REQUEST));
             }));
+            // 조회 제한도 연결을 유지하며 대기 시간·대상 방·페이지를 돌려줘 이전 화면의 재시도를 막는다.
             return result.onErrorResume(BusinessException.class,error->Mono.just(ChatServerFrame.builder().version(1).type("CHAT_ERROR")
-                .operation(c.getType()).code(error.getErrorCode().name()).clientMessageId(c.getClientMessageId()).build()));
+                .operation(c.getType()).code(error.getErrorCode().name()).clientMessageId(c.getClientMessageId())
+                .retryAfterMillis(error instanceof ChatRequestLimitException limited?limited.getRetryAfterMillis():null)
+                .social(c.getConversationId()==null?null:SocialPayload.builder().conversationId(c.getConversationId()).page(c.getPage()).build()).build()));
         },1).doOnComplete(()->closed.tryEmitEmpty());
 
         Flux<ChatServerFrame> live=events.concatMap(event->access.find(user,event.getConversationId())
@@ -100,9 +124,6 @@ public class SocialConnection {
                             .social(SocialPayload.builder().conversationId(event.getConversationId()).summaries(List.of(summary)).build()).build());
                 })).onErrorResume(BusinessException.class,error->Mono.empty()),1);
 
-        Flux<ChatServerFrame> changes=listener.receive(ChannelTopic.of("social:changed:v1"))
-            .filter(message->Long.toString(user).equals(message.getMessage()))
-            .map(ignored->frame("SOCIAL_CHANGED",null));
         Flux<ChatServerFrame> receipts=listener.receive(ChannelTopic.of("social:reads:v1"))
             .filter(message->message.getMessage().equals(active.get()))
             .concatMap(message->authentication.validate(principal).then(socialMessages.peerReadAt(user,message.getMessage()))
