@@ -1,5 +1,5 @@
 # application-local.properties로 복사하고 CHAT_MONGODB_URI에 실제 접속 URI를 공급한다.
-server.port=${CHAT_PORT:9082}
+server.port=${CHAT_PORT:8081}
 server.address=127.0.0.1
 server.ssl.enabled=false
 
@@ -68,7 +68,8 @@ spring.data.redis.port=${CHAT_REDIS_PORT:6379}
 spring.data.redis.database=${CHAT_REDIS_DATABASE:0}
 spring.data.redis.username=${CHAT_REDIS_USERNAME:}
 spring.data.redis.password=${CHAT_REDIS_PASSWORD:}
-spring.kafka.bootstrap-servers=${CHAT_KAFKA_BOOTSTRAP_SERVERS:127.0.0.1:9092}
+# Windows 예약 포트 9092를 피한 Docker 공개 포트다. broker의 advertised.listeners도 같은 주소를 사용한다.
+spring.kafka.bootstrap-servers=${CHAT_KAFKA_BOOTSTRAP_SERVERS:127.0.0.1:19092}
 spring.kafka.security.protocol=PLAINTEXT
 
 # 로컬 Kafka는 broker 1개이므로 복제 수도 1로 지정한다.
@@ -77,5 +78,5 @@ chat.kafka.min-in-sync-replicas=1
 
 # back에서 발급한 채팅 증명과 Origin·WebSocket 대상·브라우저 키 검증 정책을 일치시킨다.
 chat.auth.origin=${APP_ORIGIN:http://localhost:3000}
-chat.auth.websocket-url=${CHAT_WEBSOCKET_URL:ws://localhost:9082/ws/chat}
+chat.auth.websocket-url=${CHAT_WEBSOCKET_URL:ws://localhost:${server.port}/ws/chat}
 chat.auth.proof-required=true

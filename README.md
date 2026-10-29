@@ -46,7 +46,7 @@ Docker Desktop에서 다음 서비스가 실행 중이어야 한다.
 | --- | --- | --- |
 | mongoDB | 127.0.0.1:27017 | playground DB, chat_messages 컬렉션 |
 | local-redis | 127.0.0.1:6379 | back과 공유할 세션, 향후 chat: 접속 상태 |
-| kafka | 127.0.0.1:9092 | 채팅 처리·전파 |
+| kafka | 127.0.0.1:19092 | 채팅 처리·전파. Windows 예약 포트 9092를 피한 Docker 공개 포트 |
 
 기존 MongoDB·Redis 데이터는 삭제하거나 초기화하지 않는다. 기동 시 Redis에는 PING만 보내고, 실제 인증 요청에서만 TTL이 있는 chat:auth: 키를 사용한다. 로그인 토큰·TTL은 변경하지 않으며 기존 세션의 최초 새 티켓 발급에서 공개 경계 메타데이터만 추가한다.
 
