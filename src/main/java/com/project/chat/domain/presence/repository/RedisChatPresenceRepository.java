@@ -1,6 +1,7 @@
 package com.project.chat.domain.presence.repository;
 
 import com.project.chat.domain.chat.support.ChatAvatarCatalog;
+import com.project.chat.domain.chat.service.ChatProfiles;
 
 import com.project.chat.domain.presence.dto.response.ChatOnlineUserResponse;
 import com.project.chat.domain.presence.dto.response.ChatPresenceSnapshot;
@@ -41,6 +42,7 @@ public class RedisChatPresenceRepository {
     private static final RedisScript<List> PAGE = RedisScript.of(new ClassPathResource("redis/presence/page.lua"), List.class);
 
     private final ReactiveStringRedisTemplate redis;
+    private final ChatProfiles profiles;
 
     public Mono<Void> connect(ChatPrincipal principal, UUID connectionId) {
         return execute(CONNECT, principal.getUserId(),
@@ -73,19 +75,21 @@ public class RedisChatPresenceRepository {
     }
 
     /** 접속자 목록은 요청 시에만 조회하며, 각 사용자에 연결이 여러 개여도 프로필을 한 번만 반환한다. */
-    public Mono<ChatPresenceSnapshot> snapshot(String afterUserId, int size) {
+    public Mono<ChatPresenceSnapshot> snapshot(String afterUserId, int size, long viewerId) {
         // 전체 개수와 페이지 경계를 원자적으로 읽으며 offset 증가에 따른 탐색 비용을 없앤다.
         return redis.execute(PAGE, List.of(USERS, ORDERED_USERS),
-                        List.of(afterUserId == null ? "" : afterUserId, Integer.toString(size))).single()
+                        List.of(afterUserId == null ? "" : afterUserId, Integer.toString(size), Long.toString(viewerId))).single()
                 // Redis의 List.class 반환 경계에서만 와일드카드로 바꾸고 이후에는 raw 타입을 전파하지 않는다.
                 .<List<?>>map(page -> page)
                 .flatMap(page -> Flux.fromIterable(page.subList(2, page.size()))
                         .map(String::valueOf)
-                        .flatMapSequential(this::publicProfile, 16)
+                        .flatMapSequential(userId -> publicProfile(userId, viewerId), 16)
                         .collectList()
                         .map(users -> ChatPresenceSnapshot.builder()
                                 .onlineCount(Long.parseLong(String.valueOf(page.getFirst())))
-                                .users(users.stream().sorted(Comparator.comparing(ChatOnlineUserResponse::getNickname))
+                                // 첫 페이지의 본인은 닉네임 정렬보다 우선하고 나머지는 기존 순서를 유지한다.
+                                .users(users.stream().sorted(Comparator.comparing(ChatOnlineUserResponse::isSelf).reversed()
+                                        .thenComparing(ChatOnlineUserResponse::getNickname))
                                         .toList())
                                 .hasMore(!String.valueOf(page.get(1)).isEmpty())
                                 .nextUserId(String.valueOf(page.get(1)).isEmpty() ? null : String.valueOf(page.get(1)))
@@ -93,14 +97,18 @@ public class RedisChatPresenceRepository {
                 .onErrorMap(exception -> unavailable());
     }
 
-    private Mono<ChatOnlineUserResponse> publicProfile(String userId) {
+    private Mono<ChatOnlineUserResponse> publicProfile(String userId, long viewerId) {
         // 프로필의 TTL은 리스보다 길다. 만료 경합으로 없어진 프로필은 노출하지 않는다.
         return redis.<String, String>opsForHash().entries(PROFILE_PREFIX + userId)
                 .collectMap(Map.Entry::getKey, Map.Entry::getValue)
                 .filter(values -> values.containsKey("nickname") && values.containsKey("avatarId"))
-                .map(values -> ChatOnlineUserResponse.builder()
+                // 재접속 없이도 인증 서버가 관리하는 최신 공개 UUID·닉네임·아바타를 함께 조회한다.
+                .flatMap(values -> profiles.resolve(Long.valueOf(userId), values.get("nickname"), values.get("avatarId")))
+                .map(profile -> ChatOnlineUserResponse.builder()
+                        .publicUserId(profile.getPublicUserId())
+                        .self(Long.parseLong(userId) == viewerId)
                         // 기존 접속자의 Redis 리스가 남아 있어도 새 카탈로그 밖의 이미지는 노출하지 않는다.
-                        .nickname(values.get("nickname")).avatarId(ChatAvatarCatalog.normalize(values.get("avatarId"))).build());
+                        .nickname(profile.getNickname()).avatarId(ChatAvatarCatalog.normalize(profile.getAvatarId())).build());
     }
 
     private Mono<Long> execute(RedisScript<Long> script, long userId, List<String> args) {

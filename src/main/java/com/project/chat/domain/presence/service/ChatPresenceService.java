@@ -65,7 +65,8 @@ public class ChatPresenceService {
             return Mono.error(new BusinessException(ErrorCode.INVALID_PRESENCE_REQUEST));
         }
         return authentication.validate(principal).then(rateLimiter.read(principal.getUserId()))
-                .then(repository.snapshot(afterUserId, size));
+                // 본인 표시는 클라이언트 입력이 아닌 검증된 연결의 회원 번호로만 결정한다.
+                .then(repository.snapshot(afterUserId, size, principal.getUserId()));
     }
 
     public Mono<Long> onlineCount() {
